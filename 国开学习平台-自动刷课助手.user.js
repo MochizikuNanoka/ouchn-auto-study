@@ -842,7 +842,8 @@
         const remoteVer = m[1];
         const localVer = '1.0.1';
         if (remoteVer !== localVer) {
-          logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），请前往 GitHub 下载更新`);
+          logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），正在打开下载页...`);
+          window.open('https://github.com/MochizikuNanoka/ouchn-auto-study/releases', '_blank');
         } else {
           logger.info(`已是最新 v${localVer}`);
         }
