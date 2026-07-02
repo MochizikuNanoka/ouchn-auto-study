@@ -535,13 +535,11 @@
         if (!isCoursePage()) { logger.error('返回课程页失败'); return false; }
       }
 
-      // 检测页面是否挂了（AxiosError timeout 等）
+      // 检测页面是否挂了（AxiosError timeout）
       const bodyText = document.body?.innerText || '';
-      const isDead = bodyText.includes('timeout') || bodyText.includes('AxiosError') ||
-                     bodyText.includes('500') || bodyText.includes('服务器错误') ||
-                     (document.querySelectorAll('.el-collapse-item__header').length === 0 && document.querySelectorAll('.hoverItem').length === 0);
+      const isDead = bodyText.includes('AxiosError') && bodyText.includes('timeout');
       if (isDead) {
-        logger.warn('检测到页面异常，F5刷新恢复...');
+        logger.warn('检测到 AxiosError timeout，F5刷新...');
         this._saveState();
         location.reload();
         return false;
@@ -897,11 +895,12 @@
           }
         });
       } else if (isCoursePage()) {
-        // F5 后回到课程页，自动继续
+        // F5 后回到课程页，直接恢复处理（不调 start，跳过 running 检查）
         logger.info('课程页已恢复，自动继续...');
-        await sleep(1000);
+        await sleep(1500);
+        // 直接启动循环，不经过 start() 的 running 检查
         ap.running = true;
-        ap.start();
+        ap._processLoop();
       }
     }
 
