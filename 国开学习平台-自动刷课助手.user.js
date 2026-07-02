@@ -516,14 +516,6 @@
 
         this.currentIndex++;
         this._saveState();
-
-        // 每节完成后 F5 刷新，避免 AxiosError timeout
-        if (this.currentIndex < this.pendingSections.length) {
-          logger.info('F5 refresh to prevent stale state...');
-          location.reload();
-          return; // reload 后 init() 会恢复进度
-        }
-
         await sleep(2000);
       }
 
@@ -541,6 +533,18 @@
         window.location.hash = '#/myCourse/study?id=3098';
         await sleep(3000);
         if (!isCoursePage()) { logger.error('返回课程页失败'); return false; }
+      }
+
+      // 检测页面是否挂了（AxiosError timeout 等）
+      const bodyText = document.body?.innerText || '';
+      const isDead = bodyText.includes('timeout') || bodyText.includes('AxiosError') ||
+                     bodyText.includes('500') || bodyText.includes('服务器错误') ||
+                     (document.querySelectorAll('.el-collapse-item__header').length === 0 && document.querySelectorAll('.hoverItem').length === 0);
+      if (isDead) {
+        logger.warn('检测到页面异常，F5刷新恢复...');
+        this._saveState();
+        location.reload();
+        return false;
       }
 
       // 重新展开所有章节
@@ -830,7 +834,7 @@
   }
 
   // ======================== 初始化 ========================
-  function init() {
+  async function init() {
     logger.info('自动刷课助手 v2 初始化');
     logger.info(`页面: ${window.location.hash || '/'}`);
 
@@ -840,28 +844,23 @@
     // F5 恢复
     const saved = StateManager.load();
     if (saved && saved.currentIndex > 0) {
-      logger.info('检测到已保存进度');
+      logger.info('检测到已保存进度，自动恢复...');
+      ap.currentIndex = saved.currentIndex;
+      ap.stats = saved.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
 
       if (isVideoPage()) {
         logger.info('恢复视频处理...');
-        ap.currentIndex = saved.currentIndex;
-        ap.stats = saved.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
         ap.running = true;
         VideoHandler.waitForCompletion().then(async () => {
           ap.currentIndex++;
           ap.stats.videos++;
           ap._saveState();
-          // 返回课程页继续
           window.location.hash = '#/myCourse/study?id=3098';
           await sleep(3000);
           await ap.start();
         });
-      }
-
-      if (isExamPage()) {
+      } else if (isExamPage()) {
         logger.info('恢复考试处理...');
-        ap.currentIndex = saved.currentIndex;
-        ap.stats = saved.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
         ap.running = true;
         ExamHandler.waitForPlugin().then(async done => {
           if (done) {
@@ -870,12 +869,17 @@
             ap.stats.exams++;
             ap._saveState();
             await sleep(2000);
-            // 返回课程页继续
             if (!isCoursePage()) window.location.hash = '#/myCourse/study?id=3098';
             await sleep(3000);
             await ap.start();
           }
         });
+      } else if (isCoursePage()) {
+        // F5 后回到课程页，自动继续
+        logger.info('课程页已恢复，自动继续...');
+        await sleep(1000);
+        ap.running = true;
+        ap.start();
       }
     }
 
