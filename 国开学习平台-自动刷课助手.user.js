@@ -156,8 +156,17 @@
 
         // 节次标题 — 多种选择器兜底
         let title = '';
+        // 视频：.section span:first-child
         const sectionSpan = item.querySelector('.section span:first-child');
         if (sectionSpan) title = sectionSpan.textContent.trim();
+        // 考试：.testView .section（格式："测验  任务二 XXX"）
+        if (!title) {
+          const testViewSpan = item.querySelector('.testView .section');
+          if (testViewSpan) {
+            title = testViewSpan.textContent.trim().replace(/\s+/g, ' ');
+            // 去掉"测验"前缀，保留纯净标题用于匹配header
+          }
+        }
         if (!title) {
           // 备用：找最近的 header
           const header = item.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header .title');
@@ -181,11 +190,16 @@
           progress = parseFloat(t);
           if (isNaN(progress)) progress = 0;
         } else {
-          // 备用：看 content_vice 里的文字
+          // 考试：.content_vice 文字（"章节测试：合格"=100%, "章节测试：未进行"=0%）
           const cv = item.querySelector('.content_vice');
           if (cv) {
-            const nums = cv.textContent.match(/(\d+)%/);
-            if (nums) progress = parseFloat(nums[1]);
+            const cvText = cv.textContent.trim();
+            if (cvText.includes('合格')) progress = 100;
+            else if (cvText.includes('未通过')) progress = 0;
+            else {
+              const nums = cvText.match(/(\d+)%/);
+              if (nums) progress = parseFloat(nums[1]);
+            }
           }
         }
 
@@ -255,12 +269,22 @@
       return null;
     }
 
-    /** 在DOM中查找节次的进度元素（.hoverItem，用于解析数据） */
+    /** 在DOM中查找节次的进度元素（.hoverItem 或 .testView，用于解析数据） */
     static findSectionByTitle(title) {
-      const items = document.querySelectorAll('.hoverItem .section span:first-child');
-      for (const item of items) {
+      // 视频类型：.section span:first-child
+      const videoItems = document.querySelectorAll('.hoverItem .section span:first-child');
+      for (const item of videoItems) {
         if (item.textContent.trim() === title) {
           return item.closest('.hoverItem');
+        }
+      }
+      // 考试类型：.testView .section
+      const examItems = document.querySelectorAll('.testView .section');
+      for (const item of examItems) {
+        const t = item.textContent.trim().replace(/\s+/g, ' ');
+        // 考试标题格式："测验  任务二 设置文本格式"，去掉"测验"前缀匹配
+        if (t === title || t.includes(title) || title.includes(t.replace('测验  ', ''))) {
+          return item.closest('.hoverItem') || item.closest('[class*="content"]');
         }
       }
       return null;
@@ -607,8 +631,9 @@
       hoverItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(500);
 
-      // 方式1: dispatchEvent 触发 Vue 事件
-      const clickTarget = hoverItem.querySelector('.section') || hoverItem.querySelector('.content_main') || hoverItem;
+      // 点击目标：视频点 .section，考试点 .testView
+      const isExamItem = hoverItem.querySelector('.testView');
+      const clickTarget = isExamItem || hoverItem.querySelector('.section') || hoverItem.querySelector('.content_main') || hoverItem;
       clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
       logger.debug(`已触发点击: ${section.title}`);
 
