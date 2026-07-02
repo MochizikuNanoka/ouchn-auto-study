@@ -722,6 +722,7 @@
             <button id="dbgvideo">测视频</button>
             <button id="dbgexam">测考试</button>
             <button id="dbgreset">重置</button>
+            <button id="dbgupdate">检查更新</button>
           </div>
           <div class="ctrls">
             <button class="pri" id="bs">开始</button>
@@ -752,6 +753,7 @@
       this.panel.querySelector('#dbgvideo').addEventListener('click', () => this._debugTest('video'));
       this.panel.querySelector('#dbgexam').addEventListener('click', () => this._debugTest('exam'));
       this.panel.querySelector('#dbgreset').addEventListener('click', () => { StateManager.clear(); this.ap.stop(); this._ui(); logger.info('状态已重置'); });
+      this.panel.querySelector('#dbgupdate').addEventListener('click', () => this._checkUpdate());
       this.panel.querySelector('.btn-tog').addEventListener('click', () => { this.expanded = !this.expanded; this.panel.classList.toggle('mini', !this.expanded); this.panel.querySelector('.btn-tog').textContent = this.expanded ? '-' : '+'; });
 
       this._makeDraggable();
@@ -792,6 +794,26 @@
         <span>exam <b class="ok">${ap.stats.exams}</b></span>
         <span>err <b class="er">${ap.stats.errors}</b></span>
         <span>${ap.currentIndex}/${total}</span>`;
+    }
+
+    async _checkUpdate() {
+      logger.info('检查更新中...');
+      try {
+        const resp = await fetch('https://raw.githubusercontent.com/MochizikuNanoka/ouchn-auto-study/master/%E5%9B%BD%E5%BC%80%E5%AD%A6%E4%B9%A0%E5%B9%B3%E5%8F%B0-%E8%87%AA%E5%8A%A8%E5%88%B7%E8%AF%BE%E5%8A%A9%E6%89%8B.user.js?t=' + Date.now());
+        if (!resp.ok) { logger.warn('无法获取远端版本'); return; }
+        const text = await resp.text();
+        const m = text.match(/@version\s+([\d.]+)/);
+        if (!m) { logger.warn('未找到远端版本号'); return; }
+        const remoteVer = m[1];
+        const localVer = '1.0.0';
+        if (remoteVer !== localVer) {
+          logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），请前往 GitHub 下载更新`);
+        } else {
+          logger.info(`已是最新 v${localVer}`);
+        }
+      } catch (e) {
+        logger.warn(`检查更新失败: ${e.message}`);
+      }
     }
 
     _debugTest(type) {
