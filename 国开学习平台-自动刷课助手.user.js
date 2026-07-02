@@ -388,9 +388,18 @@
     static async submitExam() {
       logger.info('===== 交卷流程 =====');
 
+      // 辅助：按文本找按钮
+      const findBtnByText = (text) => {
+        const btns = document.querySelectorAll('button');
+        for (const b of btns) {
+          if (b.textContent.includes(text)) return b;
+        }
+        return null;
+      };
+
       // 1. 点击交卷
       logger.info('[1] 点击交卷...');
-      const btn = await waitForElement('.paperBtn', 5000) || document.querySelector('button:has(span:contains("交卷"))');
+      const btn = await waitForElement('.paperBtn', 5000) || findBtnByText('交卷');
       if (btn) { btn.click(); logger.success('已点击交卷'); await sleep(1500); }
       else { logger.error('未找到交卷按钮'); return false; }
 
@@ -406,12 +415,14 @@
       // 3. 查看试卷
       logger.info('[3] 查看试卷...');
       await sleep(1000);
-      const viewBtn = document.querySelector('button:has(span:contains("查看")), button:has(span:contains("试卷"))');
-      if (viewBtn) { viewBtn.click(); await sleep(1000); }
+      const viewBtn = await waitForElement('.determine', 5000) || findBtnByText('查看试卷');
+      if (viewBtn) { viewBtn.click(); logger.success('已点击查看试卷'); await sleep(1500); }
+      else { logger.warn('未找到查看试卷按钮，直接返回'); }
 
       // 4. 返回
       logger.info('[4] 返回课程页...');
-      const back = document.querySelector('.goBack') || document.querySelector('button:has(span:contains("返回"))');
+      await sleep(500);
+      const back = document.querySelector('.goBack') || findBtnByText('返回');
       if (back) { back.click(); logger.success('已点击返回'); }
       else { history.back(); }
 
