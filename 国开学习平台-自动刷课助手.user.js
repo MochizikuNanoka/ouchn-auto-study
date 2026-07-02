@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      1.0.0
+// @version      1.0.1
 // @description  自动观看视频 + 自动提交考试（配合爱问答助手）— 基于课程总览页解析进度
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -545,9 +545,46 @@
         return false;
       }
 
-      // 重新展开所有章节
-      await CourseParser.expandAllChapters();
-      await sleep(1000);
+      // 智能展开：只展开目标节次所在的章节
+      const targetChapter = section.chapter;
+      let found = false;
+
+      if (targetChapter) {
+        // 找到目标章节的 header
+        const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
+        for (const ch of chapterHeaders) {
+          const cn = ch.querySelector('.chapter_name span');
+          if (cn && cn.textContent.trim() === targetChapter) {
+            // 展开这个章节
+            if (ch.getAttribute('aria-expanded') !== 'true') {
+              ch.click();
+              await sleep(500);
+            }
+            // 在已展开的内容里找节次
+            const sectionEl = CourseParser.findSectionByTitle(section.title);
+            if (sectionEl) {
+              found = true;
+              // 确保节次级也展开
+              const wrap = sectionEl.closest('.el-collapse-item__wrap');
+              if (wrap) {
+                const hidden = wrap.getAttribute('aria-hidden') === 'true' || wrap.style.display === 'none';
+                if (hidden) {
+                  const sh = wrap.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header');
+                  if (sh) { sh.click(); await sleep(400); }
+                }
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      // 备用：展开所有
+      if (!found) {
+        logger.debug('快速定位失败，展开全部章节...');
+        await CourseParser.expandAllChapters();
+        await sleep(500);
+      }
 
       // 策略: 点击 hoverItem 内的 .section 区域（触发 Vue @click 导航）
       const hoverItem = CourseParser.findSectionByTitle(section.title);
@@ -803,7 +840,7 @@
         const m = text.match(/@version\s+([\d.]+)/);
         if (!m) { logger.warn('未找到远端版本号'); return; }
         const remoteVer = m[1];
-        const localVer = '1.0.0';
+        const localVer = '1.0.1';
         if (remoteVer !== localVer) {
           logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），请前往 GitHub 下载更新`);
         } else {
