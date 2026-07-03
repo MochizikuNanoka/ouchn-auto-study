@@ -448,7 +448,6 @@
       this.sections = [];
       this.pendingSections = []; // 未完成的节次
       this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
-      this._lastActivity = 0;  // 看门狗用
     }
 
     restoreState() {
@@ -462,7 +461,6 @@
     }
 
     async start() {
-      if (this.running) { logger.warn('已在运行中'); return; }
       this.running = true;
       this.paused = false;
 
@@ -534,7 +532,6 @@
         if (this.paused) { await sleep(1000); continue; }
 
         const section = this.pendingSections[this.currentIndex];
-        this._lastActivity = Date.now();
         logger.info(`\n--- [${this.currentIndex + 1}/${this.pendingSections.length}] ${section.title} ---`);
         logger.info(`Type: ${section.type} | Progress: ${section.progress}% | Chapter: ${section.chapter}`);
 
@@ -866,13 +863,6 @@
         <span>exam <b class="ok">${ap.stats.exams}</b></span>
         <span>err <b class="er">${ap.stats.errors}</b></span>
         <span>${ap.currentIndex}/${total}</span>`;
-
-      // 看门狗：运行中但30秒无活动 → 自动重启
-      if (running && ap._lastActivity && Date.now() - ap._lastActivity > 30000) {
-        logger.warn('看门狗: 30秒无活动，自动重启...');
-        ap.stop();
-        setTimeout(() => ap.start(), 2000);
-      }
     }
 
     async _checkUpdate() {
