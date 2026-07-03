@@ -21,7 +21,6 @@
     RETRY_DELAY_MAX: 30000,
     MAX_RETRIES: 5,
     STORAGE_KEY: 'ouchn_autoplay_v2',
-    COURSE_URL: '/learningPlatform/#/myCourse/study?id=3098',
   };
 
   // ======================== 日志系统 ========================
@@ -563,12 +562,12 @@
     }
 
     async _navigateAndProcess(section) {
-      // 确保在课程总览页
-      if (!isCoursePage()) {
-        logger.info('返回课程总览页...');
-        window.location.hash = '#/myCourse/study?id=3098';
+      // 如果不在课程页但侧边栏可见（视频页），不需要回课程页
+      // 考试完成后 submitExam 已经点了返回，这里也无需额外跳转
+      if (!isCoursePage() && !isVideoPage() && !isExamPage()) {
+        logger.info('页面异常，返回课程页...');
+        history.back();
         await sleep(3000);
-        if (!isCoursePage()) { logger.error('返回课程页失败'); return false; }
       }
 
       // 检测页面是否挂了（AxiosError timeout）
@@ -947,7 +946,7 @@
           ap.currentIndex++;
           ap.stats.videos++;
           ap._saveState();
-          window.location.hash = '#/myCourse/study?id=3098';
+          window.location.hash = location.hash.replace('vidoStudy', 'myCourse/study').replace(/&.*/, '') || '#/myCourse/study';
           await sleep(3000);
           await ap.start();
         });
@@ -961,7 +960,7 @@
             ap.stats.exams++;
             ap._saveState();
             await sleep(2000);
-            if (!isCoursePage()) window.location.hash = '#/myCourse/study?id=3098';
+            if (!isCoursePage()) history.back();
             await sleep(3000);
             await ap.start();
           }
