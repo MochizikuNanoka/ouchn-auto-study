@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      1.0.5
+// @version      1.0.6
 // @description  自动观看视频 + 自动提交考试（配合爱问答助手）— 基于课程总览页解析进度
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -354,6 +354,7 @@
 
     static refreshPage() {
       logger.info('执行F5刷新...');
+      window.__ouchn_reloading = true;
       location.reload();
     }
   }
@@ -439,6 +440,7 @@
     constructor() {
       this.running = false;
       this.paused = false;
+      this._reloading = false;
       this.currentIndex = 0;
       this.sections = [];
       this.pendingSections = []; // 未完成的节次
@@ -523,17 +525,39 @@
     }
 
     async _processLoop() {
+      this._startWatchdog();
       while (this.running && this.currentIndex < this.pendingSections.length) {
         if (this.paused) { await sleep(1000); continue; }
+        if (this._reloading) { await sleep(2000); continue; }
 
         const section = this.pendingSections[this.currentIndex];
+        if (!section) {
+          logger.error(`索引${this.currentIndex}越界(pending共${this.pendingSections.length}个)，重置扫描`);
+          this.currentIndex = 0;
+          await sleep(1000);
+          continue;
+        }
         logger.info(`\n--- [${this.currentIndex + 1}/${this.pendingSections.length}] ${section.title} ---`);
         logger.info(`Type: ${section.type} | Progress: ${section.progress}% | Chapter: ${section.chapter}`);
+
+        // 二次确认：当前节次是否真的未完成
+        if (isCoursePage()) {
+          const recheckItem = CourseParser.findSectionByTitle(section.title);
+          if (recheckItem) {
+            const ll = recheckItem.querySelector('.loadingLinear');
+            if (ll && parseFloat(ll.textContent) >= 100) {
+              logger.warn(`二次确认: ${section.title} 已完成(>=100%)，跳过`);
+              this.currentIndex++;
+              this._saveState();
+              continue;
+            }
+          }
+        }
 
         let success = false;
         try {
           success = await this._navigateAndProcess(section);
-          this._lastActivity = Date.now();
+          this._lastProgressTime = Date.now();
           if (success) {
             if (section.type === 'video') this.stats.videos++;
             else this.stats.exams++;
@@ -545,8 +569,12 @@
           this.stats.errors++;
         }
 
-        this.currentIndex++;
-        this._saveState();
+        if (!this._reloading) {
+          this.currentIndex++;
+          this._saveState();
+        } else {
+          logger.info('等待页面刷新恢复...');
+        }
         await sleep(2000);
       }
 
@@ -575,53 +603,66 @@
       const isDead = bodyText.includes('AxiosError') && bodyText.includes('timeout');
       if (isDead) {
         logger.warn('检测到 AxiosError timeout，F5刷新...');
-        this._saveState();
+        this._markReload();
         location.reload();
         return false;
       }
 
-      // 智能展开：先只展开目标章节，找不到再全展开
-      const allHoverItems = document.querySelectorAll('.hoverItem');
-      let hoverItem = allHoverItems[section.domIndex];
-
-      if (!hoverItem || hoverItem.offsetParent === null) {
-        // 先试只展开目标章节
-        if (section.chapter) {
-          const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
-          for (const ch of chapterHeaders) {
-            const cn = ch.querySelector('.chapter_name span');
-            if (cn && cn.textContent.trim() === section.chapter) {
-              if (ch.getAttribute('aria-expanded') !== 'true') {
-                ch.click();
-                await sleep(600);
-              }
-              break;
+      // ===== 导航核心：优先标题匹配，domIndex作最后回退 =====
+      // 确保目标章节展开
+      if (section.chapter) {
+        const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
+        for (const ch of chapterHeaders) {
+          const cn = ch.querySelector('.chapter_name span');
+          if (cn && cn.textContent.trim() === section.chapter) {
+            if (ch.getAttribute('aria-expanded') !== 'true') {
+              ch.click();
+              await sleep(600);
             }
+            break;
           }
-          // 重新获取
-          const refreshed = document.querySelectorAll('.hoverItem');
-          hoverItem = refreshed[section.domIndex];
-        }
-        // 还是找不到就全展开
-        if (!hoverItem || hoverItem.offsetParent === null) {
-          await CourseParser.expandAllChapters();
-          await sleep(500);
-          const all = document.querySelectorAll('.hoverItem');
-          hoverItem = all[section.domIndex];
         }
       }
+
+      // 方法1: 标题匹配（不受DOM折叠影响）
+      let hoverItem = CourseParser.findSectionByTitle(section.title);
+      let matchMethod = 'title';
+
+      // 方法2: 找不到就全展开后再按标题搜索
+      if (!hoverItem || hoverItem.offsetParent === null) {
+        await CourseParser.expandAllChapters();
+        await sleep(500);
+        const allItems = document.querySelectorAll('.hoverItem');
+        for (const item of allItems) {
+          const secSpan = item.querySelector('.section span:first-child');
+          const testSpan = item.querySelector('.testView .section');
+          const itemTitle = (secSpan?.textContent?.trim() || testSpan?.textContent?.trim() || '').replace(/\s+/g, ' ');
+          if (itemTitle === section.title || itemTitle.includes(section.title.substring(0, 8))) {
+            hoverItem = item;
+            matchMethod = 'title-fullexpand';
+            break;
+          }
+        }
+        // 方法3: domIndex终极回退
+        if (!hoverItem) {
+          hoverItem = allItems[section.domIndex];
+          matchMethod = 'domIndex';
+        }
+      }
+
       if (!hoverItem) {
-        logger.warn(`未找到节次(domIndex=${section.domIndex}): ${section.title}，跳过`);
+        logger.warn(`未找到节次: ${section.title}，跳过`);
         return false;
       }
+      logger.debug(`导航定位: ${matchMethod} -> "${section.title}"`);
 
       // 确保父级可见
-      const collapseWrap = hoverItem.closest('.el-collapse-item__wrap');
-      if (collapseWrap) {
-        const hidden = collapseWrap.getAttribute('aria-hidden') === 'true' || collapseWrap.style.display === 'none';
-        if (hidden) {
-          const ch = collapseWrap.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header');
-          if (ch) { ch.click(); await sleep(800); }
+      if (hoverItem.offsetParent === null) {
+        const wrap = hoverItem.closest('.el-collapse-item__wrap');
+        const header = wrap?.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header');
+        if (header && header.getAttribute('aria-expanded') !== 'true') {
+          header.click();
+          await sleep(800);
         }
       }
 
@@ -635,19 +676,7 @@
       clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
       logger.debug(`已触发点击: ${section.title}`);
 
-      // 方式2: 如果方式1无效，尝试 Vue Router
       await sleep(1000);
-      if (isCoursePage()) {
-        // 尝试通过 Vue Router 跳转
-        const appEl = document.querySelector('#app');
-        const vueApp = appEl?.__vue_app__;
-        const router = vueApp?.config?.globalProperties?.$router;
-        if (router) {
-          logger.debug('尝试 Vue Router 直接导航...');
-          // router.push 会被 Vue 的导航守卫拦截，可能400
-        }
-      }
-
       await sleep(3000);
 
       // 500 重试
@@ -657,6 +686,7 @@
         if (is500Error()) {
           logger.warn(`500错误，第${retry + 1}次重试...`);
           await sleep(CONFIG.RETRY_DELAY_BASE * (retry + 1));
+          this._markReload();
           location.reload();
           await sleep(3000);
           continue;
@@ -667,9 +697,9 @@
           // F5 刷新如果需要
           if (VideoHandler.needsRefresh()) {
             logger.info('视频未加载，执行F5刷新...');
-            this._saveState();
+            this._markReload();
             VideoHandler.refreshPage();
-            return false; // 页面重载
+            return false;
           }
           return await VideoHandler.waitForCompletion();
         }
@@ -677,7 +707,7 @@
         if (isExamPage()) {
           logger.success('进入考试页面');
           if (is500Error()) {
-            this._saveState();
+            this._markReload();
             location.reload();
             return false;
           }
@@ -702,9 +732,25 @@
       }
 
       logger.error('页面跳转超时，F5刷新重试...');
-      this._saveState();
+      this._markReload();
       location.reload();
       return false;
+    }
+
+
+    // 看门狗：超过120秒无进展则强制F5恢复
+    _startWatchdog() {
+      if (this._watchdogTimer) clearInterval(this._watchdogTimer);
+      this._lastProgressTime = Date.now();
+      this._watchdogTimer = setInterval(() => {
+        if (!this.running || this.paused || this._reloading) return;
+        const elapsed = Date.now() - this._lastProgressTime;
+        if (elapsed > 120000) {
+          logger.warn(`[看门狗] ${Math.floor(elapsed / 1000)}秒无进展，强制F5恢复...`);
+          this._markReload();
+          location.reload();
+        }
+      }, 30000);
     }
 
     _currentTitle() {
@@ -713,11 +759,20 @@
     }
 
     _saveState() {
+      const section = this.pendingSections[this.currentIndex];
       StateManager.save({
         currentIndex: this.currentIndex,
+        currentTitle: section?.title || '',
         stats: this.stats,
         timestamp: Date.now(),
       });
+    }
+
+    _markReload() {
+      if (this._reloading) return;
+      this._reloading = true;
+      this._saveState();
+      window.__ouchn_reloading = true;
     }
   }
 
@@ -901,57 +956,72 @@
     logger.info('自动刷课助手 v2 初始化');
     logger.info(`页面: ${window.location.hash || '/'}`);
 
+    const wasReloading = !!window.__ouchn_reloading;
+    if (wasReloading) {
+      logger.info('检测到刷新恢复标记');
+      window.__ouchn_reloading = false;
+    }
+
     const ap = new AutoPlayer();
     new ControlPanel(ap);
 
     // F5 恢复
-    const saved = StateManager.load();
-    if (saved && saved.currentIndex > 0) {
-      logger.info('检测到已保存进度，自动恢复...');
-      ap.currentIndex = saved.currentIndex;
-      ap.stats = saved.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
+    if (wasReloading) {
+      const saved = StateManager.load();
+      if (saved && saved.currentIndex > 0) {
+        ap.currentIndex = saved.currentIndex || 0;
+        ap.stats = saved.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
+        ap._lastProgressTime = Date.now();
 
-      if (isVideoPage()) {
-        logger.info('恢复视频处理...');
-        ap.running = true;
-        VideoHandler.waitForCompletion().then(async () => {
-          ap.currentIndex++;
-          ap.stats.videos++;
-          ap._saveState();
-          history.back();
-          await sleep(3000);
-          await ap.start();
-        });
-      } else if (isExamPage()) {
-        logger.info('恢复考试处理...');
-        ap.running = true;
-        ExamHandler.waitForPlugin().then(async done => {
-          if (done) {
-            await ExamHandler.submitExam();
+        if (isVideoPage()) {
+          logger.info(`恢复视频处理: "${saved.currentTitle || '?'}"`);
+          ap.running = true;
+          ap._startWatchdog();
+          VideoHandler.waitForCompletion().then(async () => {
+            ap._lastProgressTime = Date.now();
             ap.currentIndex++;
-            ap.stats.exams++;
+            ap.stats.videos++;
             ap._saveState();
-            await sleep(2000);
-            if (!isCoursePage()) history.back();
+            history.back();
             await sleep(3000);
+            ap._reloading = true;
             await ap.start();
+          });
+        } else if (isExamPage()) {
+          logger.info(`恢复考试处理: "${saved.currentTitle || '?'}"`);
+          ap.running = true;
+          ap._startWatchdog();
+          ExamHandler.waitForPlugin().then(async done => {
+            if (done) {
+              await ExamHandler.submitExam();
+              ap._lastProgressTime = Date.now();
+              ap.currentIndex++;
+              ap.stats.exams++;
+              ap._saveState();
+              await sleep(2000);
+              if (!isCoursePage()) history.back();
+              await sleep(3000);
+            }
+            ap._reloading = true;
+            await ap.start();
+          });
+        } else if (isCoursePage()) {
+          logger.info('课程页已恢复，重新解析并继续...');
+          ap._reloading = true;
+          await sleep(1500);
+          const allSections = await CourseParser.parse();
+          ap.pendingSections = allSections.filter(s => !s.isComplete);
+          ap.sections = allSections;
+          if (ap.pendingSections.length === 0) {
+            logger.success('所有节次已完成');
+            StateManager.clear();
+            return;
           }
-        });
-      } else if (isCoursePage()) {
-        // F5 后回到课程页，重新解析并继续
-        logger.info('课程页已恢复，重新解析并继续...');
-        await sleep(1500);
-        const allSections = await CourseParser.parse();
-        ap.pendingSections = allSections.filter(s => !s.isComplete);
-        ap.sections = allSections;
-        if (ap.pendingSections.length === 0) {
-          logger.success('所有节次已完成');
-          StateManager.clear();
-          return;
+          logger.info(`待处理: ${ap.pendingSections.length} 个节次`);
+          ap.running = true;
+          ap._startWatchdog();
+          await ap.start();
         }
-        logger.info(`待处理: ${ap.pendingSections.length} 个节次`);
-        ap.running = true;
-        ap._processLoop();
       }
     }
 

@@ -1,5 +1,5 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-%23D4893B" alt="version">
+﻿<p align="center">
+  <img src="https://img.shields.io/badge/version-1.0.6-%23D4893B" alt="version">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="platform">
   <img src="https://img.shields.io/badge/tested-电大中专-brightgreen" alt="tested">
 </p>
