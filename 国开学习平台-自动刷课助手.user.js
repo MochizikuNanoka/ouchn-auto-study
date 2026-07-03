@@ -164,7 +164,8 @@
           const testViewSpan = item.querySelector('.testView .section');
           if (testViewSpan) {
             title = testViewSpan.textContent.trim().replace(/\s+/g, ' ');
-            // 去掉"测验"前缀，保留纯净标题用于匹配header
+            // 去掉"测验"前缀，让 detectType 能匹配到"任务X"
+            title = title.replace(/^测验\s*/, '');
           }
         }
         if (!title) {
@@ -249,7 +250,7 @@
 
     /** 判断节次类型 */
     static detectType(title) {
-      if (/^任务[一二三四五六七八九十]/.test(title)) return 'exam';
+      if (/^(任务[一二三四五六七八九十]|测验)/.test(title)) return 'exam';
       return 'video';
     }
 
