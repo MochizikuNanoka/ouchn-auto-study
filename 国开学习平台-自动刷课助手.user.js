@@ -267,26 +267,36 @@
     }
 
     /** 在DOM中查找节次的进度元素（.hoverItem 或 .testView，用于解析数据） */
-    static findSectionByTitle(title) {
-      // 视频类型：.section span:first-child
+    static findSectionByTitle(title, type) {
+      // 按类型优先：type='exam' 先搜 .testView，避免与同名视频标题冲突
+      if (type === 'exam') {
+        const examItems = document.querySelectorAll('.testView .section');
+        for (const item of examItems) {
+          const t = item.textContent.trim().replace(/\s+/g, ' ');
+          if (t === title || t.includes(title) || title.includes(t.replace(/^测验\s*/, ''))) {
+            return item.closest('.hoverItem') || item.closest('[class*="content"]');
+          }
+        }
+      }
+      // 视频搜索（对所有类型都执行回退）
       const videoItems = document.querySelectorAll('.hoverItem .section span:first-child');
       for (const item of videoItems) {
         if (item.textContent.trim() === title) {
           return item.closest('.hoverItem');
         }
       }
-      // 考试类型：.testView .section
-      const examItems = document.querySelectorAll('.testView .section');
-      for (const item of examItems) {
-        const t = item.textContent.trim().replace(/\s+/g, ' ');
-        // 考试标题格式："测验  任务二 设置文本格式"，去掉"测验"前缀匹配
-        if (t === title || t.includes(title) || title.includes(t.replace('测验  ', ''))) {
-          return item.closest('.hoverItem') || item.closest('[class*="content"]');
+      // 非 exam 类型的考试回退搜索
+      if (type !== 'exam') {
+        const examItems = document.querySelectorAll('.testView .section');
+        for (const item of examItems) {
+          const t = item.textContent.trim().replace(/\s+/g, ' ');
+          if (t === title || t.includes(title) || title.includes(t.replace(/^测验\s*/, ''))) {
+            return item.closest('.hoverItem') || item.closest('[class*="content"]');
+          }
         }
       }
       return null;
     }
-  }
 
   // ======================== 视频处理器 ========================
   class VideoHandler {
@@ -554,7 +564,7 @@
 
         // 二次确认：当前节次是否真的未完成
         if (isCoursePage()) {
-          const recheckItem = CourseParser.findSectionByTitle(section.title);
+          const recheckItem = CourseParser.findSectionByTitle(section.title, section.type);
           if (recheckItem) {
             const ll = recheckItem.querySelector('.loadingLinear');
             if (ll && parseFloat(ll.textContent) >= 100) {
@@ -640,7 +650,7 @@
       }
 
       // 方法1: 标题匹配（不受DOM折叠影响）
-      let hoverItem = CourseParser.findSectionByTitle(section.title);
+      let hoverItem = CourseParser.findSectionByTitle(section.title, section.type);
       let matchMethod = 'title';
 
       // 方法2: 找不到就全展开后再按标题搜索
