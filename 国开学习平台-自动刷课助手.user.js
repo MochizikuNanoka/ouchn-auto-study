@@ -696,9 +696,8 @@
       hoverItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(500);
 
-      // 点击目标：视频点 .section，考试点 .testView
-      const isExamItem = hoverItem.querySelector('.testView');
-      const clickTarget = isExamItem || hoverItem.querySelector('.section') || hoverItem.querySelector('.content_main') || hoverItem;
+      // 点击目标：统一用 .section（导航触发点），.testView 只是容器不会触发导航
+      const clickTarget = hoverItem.querySelector('.section') || hoverItem.querySelector('.content_main') || hoverItem;
       clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
       logger.debug(`已触发点击: ${section.title}`);
 
