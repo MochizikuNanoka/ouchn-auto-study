@@ -419,21 +419,11 @@
       if (viewBtn) { viewBtn.click(); logger.success('已点击查看试卷'); await sleep(1500); }
       else { logger.warn('未找到查看试卷按钮，直接返回'); }
 
-      // 4. 返回
+      // 4. 返回 — 直接用浏览器回退
       logger.info('[4] 返回课程页...');
       await sleep(500);
-      const back = document.querySelector('.goBack') || findBtnByText('返回');
-      if (back) { back.click(); logger.success('已点击返回'); await sleep(2000); }
-      // 兜底：如果还在考试页，手动跳回课程页
-      if (!isCoursePage()) {
-        const m = location.hash.match(/courseId=(\d+)/);
-        if (m) {
-          logger.info('手动跳回课程页...');
-          location.hash = '#/myCourse/study?id=' + m[1];
-        } else {
-          history.back();
-        }
-      }
+      history.back();
+      await sleep(2000);
 
       await sleep(2000);
       return true;
@@ -574,9 +564,8 @@
       // 如果不在课程页但侧边栏可见（视频页），不需要回课程页
       // 考试完成后 submitExam 已经点了返回，这里也无需额外跳转
       if (!isCoursePage() && !isVideoPage() && !isExamPage()) {
-        const m = location.hash.match(/courseId=(\d+)/);
-        logger.info('页面异常，跳回课程页...');
-        location.hash = m ? '#/myCourse/study?id=' + m[1] : '#/myCourse/study';
+        logger.info('页面异常，回退...');
+        history.back();
         await sleep(3000);
       }
 
@@ -956,8 +945,7 @@
           ap.currentIndex++;
           ap.stats.videos++;
           ap._saveState();
-          const m2 = location.hash.match(/courseId=(\d+)/);
-          location.hash = m2 ? '#/myCourse/study?id=' + m2[1] : '#/myCourse/study';
+          history.back();
           await sleep(3000);
           await ap.start();
         });
@@ -971,11 +959,7 @@
             ap.stats.exams++;
             ap._saveState();
             await sleep(2000);
-            // 确保回到课程页
-            if (!isCoursePage()) {
-              const m3 = location.hash.match(/courseId=(\d+)/);
-              location.hash = m3 ? '#/myCourse/study?id=' + m3[1] : '#/myCourse/study';
-            }
+            if (!isCoursePage()) history.back();
             await sleep(3000);
             await ap.start();
           }
