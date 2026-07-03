@@ -441,6 +441,7 @@
       this.running = false;
       this.paused = false;
       this._reloading = false;
+      this._loopRunning = false;
       this.currentIndex = 0;
       this.sections = [];
       this.pendingSections = []; // 未完成的节次
@@ -505,15 +506,20 @@
       }
 
       this._saveState();
-      await this._processLoop();
+      if (!this._loopRunning) {
+        await this._processLoop();
+      } else {
+        logger.warn('start() 调用时 _processLoop 已在运行');
+      }
     }
 
     pause() { this.paused = true; logger.info('已暂停'); }
-    resume() { this.paused = false; logger.info('已继续'); this._processLoop(); }
+    resume() { this.paused = false; logger.info('已继续'); if (!this._loopRunning) this._processLoop(); else logger.warn('resume() 时循环已在运行'); }
 
     stop() {
       this.running = false;
       this.paused = false;
+      this._loopRunning = false;
       StateManager.clear();
       logger.info('已停止，进度已清除');
     }
@@ -525,6 +531,12 @@
     }
 
     async _processLoop() {
+      // 防止双进程：如果已有循环在运行则直接返回
+      if (this._loopRunning) {
+        logger.warn('_processLoop 已在运行中，跳过重复调用');
+        return;
+      }
+      this._loopRunning = true;
       this._startWatchdog();
       while (this.running && this.currentIndex < this.pendingSections.length) {
         if (this.paused) { await sleep(1000); continue; }
@@ -581,6 +593,7 @@
       }
 
       this.running = false;
+      this._loopRunning = false;
       StateManager.clear();
       logger.info('\n========================================');
       logger.success('全部完成!');
