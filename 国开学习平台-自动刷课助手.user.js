@@ -531,6 +531,11 @@
       this.running = false;
       this.paused = false;
       this._loopRunning = false;
+      this._longOperation = false;
+      if (this._watchdogTimer) {
+        clearInterval(this._watchdogTimer);
+        this._watchdogTimer = null;
+      }
       StateManager.clear();
       logger.info('已停止，进度已清除');
     }
