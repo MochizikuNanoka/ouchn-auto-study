@@ -689,6 +689,11 @@
 
         if (isCoursePage()) {
           logger.debug('仍在课程页，等待跳转...');
+          // 可能是点击没生效，重试点击
+          if (retry === 2) {
+            clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            logger.debug('重新触发点击...');
+          }
           await sleep(2000);
           continue;
         }
@@ -696,7 +701,9 @@
         await sleep(1000);
       }
 
-      logger.error('页面跳转超时');
+      logger.error('页面跳转超时，F5刷新重试...');
+      this._saveState();
+      location.reload();
       return false;
     }
 
