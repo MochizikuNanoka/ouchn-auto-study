@@ -95,6 +95,31 @@
     return !!document.querySelector('.examQuestion') || window.location.hash.includes('examQuestion');
   }
 
+  // 检测平台弹窗提示"请先完成X.X"，提取应先完成的节次标题
+  function detectOrderHint() {
+    // 可能的弹窗选择器：el-message-box, el-dialog, el-notification, el-alert
+    const dialogEls = document.querySelectorAll('.el-message-box, .el-dialog, .el-notification, .el-alert, .el-message');
+    for (const el of dialogEls) {
+      const text = el.textContent || '';
+      // 匹配 "请先完成"、"请先学习"、"先完成" 等模式
+      const m = text.match(/(?:请先(?:完成|学习|通过)|先(?:完成|学习)|应先(?:完成|学习))[：:]*\s*(.+?)(?:[，。!！\s]|$)/);
+      if (m) {
+        let target = m[1].trim();
+        // 规范化：去掉"的课程""章节""节次"等后缀
+        target = target.replace(/(?:的课程|章节|节次|部分)\s*$/, '');
+        return target;
+      }
+      // 直接匹配 "请先完成" 后面的内容（更宽松的模式）
+      const m2 = text.match(/请先完成[：:]*\s*(.+?)(?:[，。!！\s]|$)/);
+      if (m2) {
+        let target = m2[1].trim();
+        target = target.replace(/(?:的课程|章节|节次|部分)\s*$/, '');
+        return target;
+      }
+    }
+    return null;
+  }
+
   // ======================== 课程解析器（重写版 — 基于课程总览页） ========================
   class CourseParser {
 
@@ -750,6 +775,23 @@
         }
 
         if (isCoursePage()) {
+          // 检测平台顺序提示："请先完成 X.X"
+          const hint = detectOrderHint();
+          if (hint) {
+            logger.warn(`平台提示应先完成: "${hint}"`);
+            // 用hint搜索正确的节次
+            const hintItem = CourseParser.findSectionByTitle(hint);
+            if (hintItem && hintItem !== hoverItem) {
+              logger.info(`纠错: 按平台提示导航到 "${hint}"`);
+              hintItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              await sleep(300);
+              const hintClickTarget = hintItem.querySelector('.section') || hintItem.querySelector('.content_main') || hintItem;
+              hintClickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+              await sleep(3000);
+              continue;
+            }
+            logger.warn(`提示节次 "${hint}" 未在DOM中找到`);
+          }
           logger.debug('仍在课程页，等待跳转...');
           // 可能是点击没生效，重试点击
           if (retry === 2) {
