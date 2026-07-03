@@ -225,13 +225,13 @@
 
         sections.push({
           index: i,
+          domIndex: i,  // DOM顺序索引，导航时直接用
           title,
           duration,
           progress,
           isComplete,
           type,
           chapter,
-          element: item,
         });
       }
 
@@ -584,51 +584,13 @@
         return false;
       }
 
-      // 智能展开：只展开目标节次所在的章节
-      const targetChapter = section.chapter;
-      let found = false;
-
-      if (targetChapter) {
-        // 找到目标章节的 header
-        const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
-        for (const ch of chapterHeaders) {
-          const cn = ch.querySelector('.chapter_name span');
-          if (cn && cn.textContent.trim() === targetChapter) {
-            // 展开这个章节
-            if (ch.getAttribute('aria-expanded') !== 'true') {
-              ch.click();
-              await sleep(500);
-            }
-            // 在已展开的内容里找节次
-            const sectionEl = CourseParser.findSectionByTitle(section.title);
-            if (sectionEl) {
-              found = true;
-              // 确保节次级也展开
-              const wrap = sectionEl.closest('.el-collapse-item__wrap');
-              if (wrap) {
-                const hidden = wrap.getAttribute('aria-hidden') === 'true' || wrap.style.display === 'none';
-                if (hidden) {
-                  const sh = wrap.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header');
-                  if (sh) { sh.click(); await sleep(400); }
-                }
-              }
-            }
-            break;
-          }
-        }
-      }
-
-      // 备用：展开所有
-      if (!found) {
-        logger.debug('快速定位失败，展开全部章节...');
-        await CourseParser.expandAllChapters();
-        await sleep(500);
-      }
-
-      // 策略: 点击 hoverItem 内的 .section 区域（触发 Vue @click 导航）
-      const hoverItem = CourseParser.findSectionByTitle(section.title);
+      // 用 domIndex 直接定位元素，不靠标题搜索
+      await CourseParser.expandAllChapters();
+      await sleep(500);
+      const allHoverItems = document.querySelectorAll('.hoverItem');
+      const hoverItem = allHoverItems[section.domIndex];
       if (!hoverItem) {
-        logger.warn(`未找到节次: ${section.title}，跳过`);
+        logger.warn(`未找到节次(domIndex=${section.domIndex}): ${section.title}，跳过`);
         return false;
       }
 
