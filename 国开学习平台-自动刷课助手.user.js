@@ -557,6 +557,7 @@
         let success = false;
         try {
           success = await this._navigateAndProcess(section);
+          this._longOperation = false;
           this._lastProgressTime = Date.now();
           if (success) {
             if (section.type === 'video') this.stats.videos++;
@@ -565,6 +566,7 @@
             this.stats.errors++;
           }
         } catch (e) {
+          this._longOperation = false;
           logger.error(`异常: ${e.message}`, e.stack);
           this.stats.errors++;
         }
@@ -693,6 +695,7 @@
         }
 
         if (isVideoPage()) {
+          this._longOperation = true;
           logger.success('进入视频页面');
           // F5 刷新如果需要
           if (VideoHandler.needsRefresh()) {
@@ -705,6 +708,7 @@
         }
 
         if (isExamPage()) {
+          this._longOperation = true;
           logger.success('进入考试页面');
           if (is500Error()) {
             this._markReload();
@@ -744,6 +748,7 @@
       this._lastProgressTime = Date.now();
       this._watchdogTimer = setInterval(() => {
         if (!this.running || this.paused || this._reloading) return;
+        if (this._longOperation) return;  // 视频播放/考试等待中，豁免
         const elapsed = Date.now() - this._lastProgressTime;
         if (elapsed > 120000) {
           logger.warn(`[看门狗] ${Math.floor(elapsed / 1000)}秒无进展，强制F5恢复...`);
@@ -976,6 +981,7 @@
         if (isVideoPage()) {
           logger.info(`恢复视频处理: "${saved.currentTitle || '?'}"`);
           ap.running = true;
+          ap._longOperation = true;
           ap._startWatchdog();
           VideoHandler.waitForCompletion().then(async () => {
             ap._lastProgressTime = Date.now();
@@ -990,6 +996,7 @@
         } else if (isExamPage()) {
           logger.info(`恢复考试处理: "${saved.currentTitle || '?'}"`);
           ap.running = true;
+          ap._longOperation = true;
           ap._startWatchdog();
           ExamHandler.waitForPlugin().then(async done => {
             if (done) {
