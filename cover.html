@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  body {
+    width: 1920px; height: 1080px;
+    background: #0A0A0F;
+    font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .cover {
+    position: relative;
+    width: 1920px; height: 1080px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+  }
+
+  /* Subtle grid background */
+  .grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, black 30%, transparent 70%);
+  }
+
+  /* Amber glow */
+  .glow {
+    position: absolute;
+    top: 35%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 800px; height: 400px;
+    background: radial-gradient(ellipse, rgba(212,137,59,.12) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Subtle scanline */
+  .scanline {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,.03) 2px,
+      rgba(0,0,0,.03) 4px
+    );
+    pointer-events: none;
+  }
+
+  /* Top accent line */
+  .accent-line {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, #D4893B 20%, #D4893B 80%, transparent);
+    opacity: .6;
+  }
+
+  .content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 32px;
+  }
+
+  /* Terminal prefix */
+  .prefix {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: 'Cascadia Code', 'SF Mono', 'Consolas', monospace;
+    font-size: 18px;
+    color: rgba(255,255,255,.3);
+    letter-spacing: .08em;
+  }
+
+  .prefix .prompt {
+    color: #5A9E6F;
+  }
+
+  .prefix .cursor {
+    display: inline-block;
+    width: 10px; height: 20px;
+    background: #D4893B;
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Main title */
+  .title {
+    font-size: 96px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    color: #E8E6E3;
+    text-align: center;
+    line-height: 1.2;
+    text-wrap: balance;
+  }
+
+  .title .accent {
+    color: #D4893B;
+  }
+
+  /* Subtitle */
+  .subtitle {
+    font-size: 28px;
+    font-weight: 400;
+    color: rgba(255,255,255,.45);
+    letter-spacing: .12em;
+    text-align: center;
+  }
+
+  /* Feature tags */
+  .tags {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+  }
+
+  .tag {
+    padding: 8px 20px;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 6px;
+    font-size: 16px;
+    color: rgba(255,255,255,.5);
+    letter-spacing: .05em;
+  }
+
+  .tag.active {
+    border-color: rgba(212,137,59,.4);
+    color: #D4893B;
+  }
+
+  /* Bottom info */
+  .footer {
+    position: absolute;
+    bottom: 48px;
+    display: flex;
+    gap: 48px;
+    font-size: 16px;
+    color: rgba(255,255,255,.2);
+    letter-spacing: .08em;
+  }
+
+  .footer span {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .footer .dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: #D4893B;
+    opacity: .5;
+  }
+
+  /* Corner decorations */
+  .corner {
+    position: absolute;
+    width: 60px; height: 60px;
+    border-color: rgba(255,255,255,.06);
+    border-style: solid;
+  }
+  .corner-tl { top: 40px; left: 40px; border-width: 1px 0 0 1px; }
+  .corner-tr { top: 40px; right: 40px; border-width: 1px 1px 0 0; }
+  .corner-bl { bottom: 40px; left: 40px; border-width: 0 0 1px 1px; }
+  .corner-br { bottom: 40px; right: 40px; border-width: 0 1px 1px 0; }
+
+  /* Status bar */
+  .status-bar {
+    position: absolute;
+    bottom: 120px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 16px;
+    background: rgba(255,255,255,.02);
+    border: 1px solid rgba(255,255,255,.04);
+    border-radius: 20px;
+    font-family: 'Cascadia Code', 'SF Mono', 'Consolas', monospace;
+    font-size: 13px;
+    color: rgba(255,255,255,.3);
+  }
+
+  .status-bar .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #5A9E6F;
+    box-shadow: 0 0 8px rgba(90,158,111,.4);
+  }
+
+  .status-bar .sep {
+    color: rgba(255,255,255,.1);
+  }
+
+  .status-bar .val {
+    color: rgba(255,255,255,.5);
+  }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="grid"></div>
+  <div class="glow"></div>
+  <div class="scanline"></div>
+  <div class="accent-line"></div>
+
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+
+  <div class="content">
+    <div class="prefix">
+      <span class="prompt">$</span>
+      <span>tampermonkey run</span>
+      <span class="cursor"></span>
+    </div>
+
+    <h1 class="title">
+      国开学习平台<br>
+      <span class="accent">自动刷课助手</span>
+    </h1>
+
+    <p class="subtitle">全自动视频播放 · 智能考试提交 · 断点续传</p>
+
+    <div class="tags">
+      <span class="tag">自动看视频</span>
+      <span class="tag active">自动交卷</span>
+      <span class="tag">500 重试</span>
+      <span class="tag">断点恢复</span>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <span class="live-dot"></span>
+    <span>v1.0.2</span>
+    <span class="sep">|</span>
+    <span>已测试</span>
+    <span class="val">电大中专平台</span>
+    <span class="sep">|</span>
+    <span>github.com/MochizikuNanoka/ouchn-auto-study</span>
+  </div>
+
+  <div class="footer">
+    <span><span class="dot"></span> Tampermonkey</span>
+    <span><span class="dot"></span> 爱问答助手</span>
+    <span><span class="dot"></span> 国开学习平台</span>
+  </div>
+</div>
+
+</body>
+</html>

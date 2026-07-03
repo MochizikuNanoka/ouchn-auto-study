@@ -969,10 +969,18 @@
           }
         });
       } else if (isCoursePage()) {
-        // F5 后回到课程页，直接恢复处理（不调 start，跳过 running 检查）
-        logger.info('课程页已恢复，自动继续...');
+        // F5 后回到课程页，重新解析并继续
+        logger.info('课程页已恢复，重新解析并继续...');
         await sleep(1500);
-        // 直接启动循环，不经过 start() 的 running 检查
+        const allSections = await CourseParser.parse();
+        ap.pendingSections = allSections.filter(s => !s.isComplete);
+        ap.sections = allSections;
+        if (ap.pendingSections.length === 0) {
+          logger.success('所有节次已完成');
+          StateManager.clear();
+          return;
+        }
+        logger.info(`待处理: ${ap.pendingSections.length} 个节次`);
         ap.running = true;
         ap._processLoop();
       }
