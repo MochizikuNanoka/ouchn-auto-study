@@ -191,16 +191,12 @@
           progress = parseFloat(t);
           if (isNaN(progress)) progress = 0;
         } else {
-          // 考试：.content_vice 文字（"章节测试：合格"=100%, "章节测试：未进行"=0%）
+          // 考试：.content_vice 文字
           const cv = item.querySelector('.content_vice');
           if (cv) {
             const cvText = cv.textContent.trim();
             if (cvText.includes('合格')) progress = 100;
-            else if (cvText.includes('未通过')) progress = 0;
-            else {
-              const nums = cvText.match(/(\d+)%/);
-              if (nums) progress = parseFloat(nums[1]);
-            }
+            else progress = 0;  // 未进行、未通过等一律当未完成
           }
         }
 
