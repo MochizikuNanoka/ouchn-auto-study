@@ -447,6 +447,7 @@
       this.sections = [];
       this.pendingSections = []; // 未完成的节次
       this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
+      this._lastActivity = 0;  // 看门狗用
     }
 
     restoreState() {
@@ -532,12 +533,14 @@
         if (this.paused) { await sleep(1000); continue; }
 
         const section = this.pendingSections[this.currentIndex];
+        this._lastActivity = Date.now();
         logger.info(`\n--- [${this.currentIndex + 1}/${this.pendingSections.length}] ${section.title} ---`);
         logger.info(`Type: ${section.type} | Progress: ${section.progress}% | Chapter: ${section.chapter}`);
 
         let success = false;
         try {
           success = await this._navigateAndProcess(section);
+          this._lastActivity = Date.now();
           if (success) {
             if (section.type === 'video') this.stats.videos++;
             else this.stats.exams++;
@@ -798,7 +801,6 @@
           <div class="ctrls">
             <button class="pri" id="bs">开始</button>
             <button id="bp" disabled>暂停</button>
-            <button id="bk" disabled>跳过</button>
             <button class="dng" id="bx" disabled>停止</button>
             <button id="bdbg" style="min-width:24px;flex:0 0 auto;padding:5px 5px">D</button>
           </div>
@@ -815,8 +817,7 @@
 
       this.panel.querySelector('#bs').addEventListener('click', () => { this.ap.start(); this._ui(); });
       this.panel.querySelector('#bp').addEventListener('click', () => { this.ap.paused ? this.ap.resume() : this.ap.pause(); this._ui(); });
-      this.panel.querySelector('#bx').addEventListener('click', () => { if (confirm('Stop?')) { this.ap.stop(); this._ui(); } });
-      this.panel.querySelector('#bk').addEventListener('click', () => { if (confirm('Skip?')) { this.ap.skip(); if (!this.ap.paused) this.ap.resume(); this._ui(); } });
+      this.panel.querySelector('#bx').addEventListener('click', () => { if (confirm('停止?')) { this.ap.stop(); this._ui(); } });
       this.panel.querySelector('#bdbg').addEventListener('click', () => {
         const row = this.panel.querySelector('#dbgrow');
         row.classList.toggle('show');
@@ -851,7 +852,6 @@
       this.panel.querySelector('#bs').disabled = ap.running;
       this.panel.querySelector('#bp').disabled = !ap.running;
       this.panel.querySelector('#bx').disabled = !ap.running;
-      this.panel.querySelector('#bk').disabled = !ap.running;
       this.panel.querySelector('#bp').textContent = paused ? '继续' : '暂停';
 
       const dot = this.panel.querySelector('#adot');
@@ -865,6 +865,13 @@
         <span>exam <b class="ok">${ap.stats.exams}</b></span>
         <span>err <b class="er">${ap.stats.errors}</b></span>
         <span>${ap.currentIndex}/${total}</span>`;
+
+      // 看门狗：运行中但30秒无活动 → 自动重启
+      if (running && ap._lastActivity && Date.now() - ap._lastActivity > 30000) {
+        logger.warn('看门狗: 30秒无活动，自动重启...');
+        ap.stop();
+        setTimeout(() => ap.start(), 2000);
+      }
     }
 
     async _checkUpdate() {
