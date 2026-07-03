@@ -733,18 +733,18 @@
 
     _build() {
       const css = `
-      #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:420px;background:#0D0D12;border:1px solid rgba(255,255,255,.06);border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.4);font:13px/1.5 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#C8C6C2;user-select:none;text-wrap:pretty;min-width:320px;max-width:800px;resize:both;overflow:hidden}
-      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.06);cursor:move;font-weight:600;font-size:13px;color:#E8E6E3;letter-spacing:.02em}
-      #ouchn-ap-v2 .hdr .acts button{background:none;border:none;color:#666;width:24px;height:24px;border-radius:5px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s}
+      #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:420px;background:#0D0D12;border:1px solid rgba(255,255,255,.06);border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.4);font:14px/1.5 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#C8C6C2;user-select:none;text-wrap:pretty;min-width:320px;max-width:800px;resize:both;overflow:hidden}
+      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.06);cursor:move;font-weight:600;font-size:14px;color:#E8E6E3;letter-spacing:.02em}
+      #ouchn-ap-v2 .hdr .acts button{background:none;border:none;color:#666;width:24px;height:24px;border-radius:5px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all .15s}
       #ouchn-ap-v2 .hdr .acts button:hover{background:rgba(255,255,255,.06);color:#aaa}
       #ouchn-ap-v2 .body{padding:10px 14px}
-      #ouchn-ap-v2 .live{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:5px 10px;background:rgba(255,255,255,.03);border-radius:6px;font-size:11px;color:#777}
+      #ouchn-ap-v2 .live{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:5px 10px;background:rgba(255,255,255,.03);border-radius:6px;font-size:12px;color:#777}
       #ouchn-ap-v2 .live .dot{width:6px;height:6px;border-radius:50%;background:#D4893B;flex-shrink:0;transition:background .3s}
       #ouchn-ap-v2 .live .dot.on{animation:pulse2 1.5s ease-in-out infinite}
       #ouchn-ap-v2 .live .dot.off{background:#444}
       @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.2}}
       #ouchn-ap-v2 .ctrls{display:flex;gap:5px;margin-bottom:8px;flex-wrap:wrap}
-      #ouchn-ap-v2 .ctrls button{flex:1;min-width:50px;padding:5px 3px;border:1px solid rgba(255,255,255,.08);border-radius:6px;cursor:pointer;font-size:10.5px;font-weight:600;color:#999;background:transparent;transition:all .15s}
+      #ouchn-ap-v2 .ctrls button{flex:1;min-width:50px;padding:6px 3px;border:1px solid rgba(255,255,255,.08);border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;color:#999;background:transparent;transition:all .15s}
       #ouchn-ap-v2 .ctrls button:hover:not(:disabled){border-color:#D4893B;color:#D4893B}
       #ouchn-ap-v2 .ctrls button:disabled{opacity:.3;cursor:not-allowed}
       #ouchn-ap-v2 .ctrls .pri{border-color:#D4893B;color:#D4893B}
@@ -784,8 +784,6 @@
           <div class="live"><span class="dot off" id="adot"></span><span id="astatus">idle</span></div>
           <div class="dbg-row" id="dbgrow">
             <input id="dbgidx" value="0" title="section index">
-            <button id="dbgvideo">测视频</button>
-            <button id="dbgexam">测考试</button>
             <button id="dbgreset">重置</button>
             <button id="dbgupdate">检查更新</button>
           </div>
@@ -813,8 +811,6 @@
         const row = this.panel.querySelector('#dbgrow');
         row.classList.toggle('show');
       });
-      this.panel.querySelector('#dbgvideo').addEventListener('click', () => this._debugTest('video'));
-      this.panel.querySelector('#dbgexam').addEventListener('click', () => this._debugTest('exam'));
       this.panel.querySelector('#dbgreset').addEventListener('click', () => { StateManager.clear(); this.ap.stop(); this._ui(); logger.info('状态已重置'); });
       this.panel.querySelector('#dbgupdate').addEventListener('click', () => this._checkUpdate());
       this.panel.querySelector('.btn-tog').addEventListener('click', () => { this.expanded = !this.expanded; this.panel.classList.toggle('mini', !this.expanded); this.panel.querySelector('.btn-tog').textContent = this.expanded ? '-' : '+'; });
@@ -877,24 +873,6 @@
       } catch (e) {
         logger.warn(`检查更新失败: ${e.message}`);
       }
-    }
-
-    _debugTest(type) {
-      if (this.ap.pendingSections.length === 0) { logger.warn('未解析课程目录，请先点start'); return; }
-      const idx = parseInt(this.panel.querySelector('#dbgidx').value) || 0;
-      if (idx >= this.ap.pendingSections.length) { logger.warn(`Index ${idx} out of range (max ${this.ap.pendingSections.length - 1})`); return; }
-      const section = this.ap.pendingSections[idx];
-      if (type === 'video' && section.type !== 'video') { logger.warn(`Section ${idx} is "${section.title}" (${section.type}), not video`); return; }
-      if (type === 'exam' && section.type !== 'exam') { logger.warn(`Section ${idx} is "${section.title}" (${section.type}), not exam`); return; }
-      logger.info(`[DEBUG] Testing ${type} #${idx}: "${section.title}"`);
-      this.ap.running = true;
-      this.ap.currentIndex = idx;
-      this.ap._navigateAndProcess(section).then(ok => {
-        logger.info(`[DEBUG] Test result: ${ok ? 'OK' : 'FAIL'}`);
-        this.ap.running = false;
-        this._ui();
-      });
-      this._ui();
     }
 
     _makeDraggable() {
