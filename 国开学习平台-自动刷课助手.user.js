@@ -561,12 +561,16 @@
     }
 
     async _navigateAndProcess(section) {
-      // 如果不在课程页但侧边栏可见（视频页），不需要回课程页
-      // 考试完成后 submitExam 已经点了返回，这里也无需额外跳转
-      if (!isCoursePage() && !isVideoPage() && !isExamPage()) {
-        logger.info('页面异常，回退...');
+      // 始终回退到课程页再导航——侧边栏点击不可靠
+      if (!isCoursePage()) {
+        logger.info('回退到课程页...');
         history.back();
         await sleep(3000);
+        // 如果回退后还在非课程页（可能Spa没变），再试一次
+        if (!isCoursePage()) {
+          history.back();
+          await sleep(3000);
+        }
       }
 
       // 检测页面是否挂了（AxiosError timeout）
