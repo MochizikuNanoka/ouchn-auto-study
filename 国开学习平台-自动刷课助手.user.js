@@ -580,11 +580,36 @@
         return false;
       }
 
-      // 用 domIndex 直接定位元素，不靠标题搜索
-      await CourseParser.expandAllChapters();
-      await sleep(500);
+      // 智能展开：先只展开目标章节，找不到再全展开
       const allHoverItems = document.querySelectorAll('.hoverItem');
-      const hoverItem = allHoverItems[section.domIndex];
+      let hoverItem = allHoverItems[section.domIndex];
+
+      if (!hoverItem || hoverItem.offsetParent === null) {
+        // 先试只展开目标章节
+        if (section.chapter) {
+          const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
+          for (const ch of chapterHeaders) {
+            const cn = ch.querySelector('.chapter_name span');
+            if (cn && cn.textContent.trim() === section.chapter) {
+              if (ch.getAttribute('aria-expanded') !== 'true') {
+                ch.click();
+                await sleep(600);
+              }
+              break;
+            }
+          }
+          // 重新获取
+          const refreshed = document.querySelectorAll('.hoverItem');
+          hoverItem = refreshed[section.domIndex];
+        }
+        // 还是找不到就全展开
+        if (!hoverItem || hoverItem.offsetParent === null) {
+          await CourseParser.expandAllChapters();
+          await sleep(500);
+          const all = document.querySelectorAll('.hoverItem');
+          hoverItem = all[section.domIndex];
+        }
+      }
       if (!hoverItem) {
         logger.warn(`未找到节次(domIndex=${section.domIndex}): ${section.title}，跳过`);
         return false;
