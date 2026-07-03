@@ -655,13 +655,16 @@
       }
 
       // 检测页面是否挂了（AxiosError timeout）
-      const bodyText = document.body?.innerText || '';
-      const isDead = bodyText.includes('AxiosError') && bodyText.includes('timeout');
-      if (isDead) {
-        logger.warn('检测到 AxiosError timeout，F5刷新...');
-        this._markReload();
-        location.reload();
-        return false;
+      // 仅在课程页检测，避免视频页残留请求超时误判
+      if (isCoursePage()) {
+        const bodyText = document.body?.innerText || '';
+        const isDead = bodyText.includes('AxiosError') && bodyText.includes('timeout');
+        if (isDead) {
+          logger.warn('检测到 AxiosError timeout，F5刷新...');
+          this._markReload();
+          location.reload();
+          return false;
+        }
       }
 
       // ===== 导航核心：优先标题匹配，domIndex作最后回退 =====
@@ -750,9 +753,19 @@
         if (isVideoPage()) {
           this._longOperation = true;
           logger.success('进入视频页面');
-          // F5 刷新如果需要
-          if (VideoHandler.needsRefresh()) {
-            logger.info('视频未加载，执行F5刷新...');
+          // 等待播放器加载（最长8秒），不急于判为失败
+          const videoEl = await waitForElement('#xgPlayer video', 8000);
+          if (!videoEl) {
+            // 8秒后仍无视频元素，检查是否有明确错误
+            const err = document.querySelector('.xgplayer-error');
+            if (err && getComputedStyle(err).display !== 'none') {
+              logger.info('视频播放器加载失败(有错误提示)，执行F5刷新...');
+              this._markReload();
+              VideoHandler.refreshPage();
+              return false;
+            }
+            // 无错误但无视频，可能是页面未完全加载，也刷新一次
+            logger.warn('视频播放器8秒未加载，执行F5刷新...');
             this._markReload();
             VideoHandler.refreshPage();
             return false;
