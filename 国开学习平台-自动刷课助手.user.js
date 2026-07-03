@@ -297,6 +297,7 @@
       }
       return null;
     }
+  }
 
   // ======================== 视频处理器 ========================
   class VideoHandler {
@@ -946,7 +947,7 @@
         const m = text.match(/@version\s+([\d.]+)/);
         if (!m) { logger.warn('未找到远端版本号'); return; }
         const remoteVer = m[1];
-        const localVer = '1.0.5';
+        const localVer = '1.0.6';
         if (remoteVer !== localVer) {
           logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），正在打开下载页...`);
           window.open('https://github.com/MochizikuNanoka/ouchn-auto-study/releases', '_blank');
