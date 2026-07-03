@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      1.0.3
+// @version      1.0.4
 // @description  自动观看视频 + 自动提交考试（配合爱问答助手）— 基于课程总览页解析进度
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -835,7 +835,7 @@
         const m = text.match(/@version\s+([\d.]+)/);
         if (!m) { logger.warn('未找到远端版本号'); return; }
         const remoteVer = m[1];
-        const localVer = '1.0.3';
+        const localVer = '1.0.4';
         if (remoteVer !== localVer) {
           logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），正在打开下载页...`);
           window.open('https://github.com/MochizikuNanoka/ouchn-auto-study/releases', '_blank');
