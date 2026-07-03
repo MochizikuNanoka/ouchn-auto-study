@@ -155,16 +155,17 @@
 
         // 节次标题 — 多种选择器兜底
         let title = '';
+        let isExamFromDom = false;  // DOM本身就标明是考试
         // 视频：.section span:first-child
         const sectionSpan = item.querySelector('.section span:first-child');
         if (sectionSpan) title = sectionSpan.textContent.trim();
-        // 考试：.testView .section（格式："测验  任务二 XXX"）
+        // 考试：.testView .section（格式："测验  X.X.X"）
         if (!title) {
           const testViewSpan = item.querySelector('.testView .section');
           if (testViewSpan) {
             title = testViewSpan.textContent.trim().replace(/\s+/g, ' ');
-            // 去掉"测验"前缀，让 detectType 能匹配到"任务X"
             title = title.replace(/^测验\s*/, '');
+            isExamFromDom = true;  // .testView 就是考试，不用靠标题猜
           }
         }
         if (!title) {
@@ -210,8 +211,8 @@
         const iconUse = item.querySelector('.iconSvg use');
         const iconHref = iconUse?.getAttribute?.('xlink:href') || iconUse?.getAttribute?.('href') || '';
 
-        // 判断类型：视频(编号) vs 考试(任务X)
-        let type = CourseParser.detectType(title);
+        // 判断类型：DOM有.testView就是考试，否则看标题
+        let type = isExamFromDom ? 'exam' : CourseParser.detectType(title);
 
         // 找到父级章节
         let chapter = '';
