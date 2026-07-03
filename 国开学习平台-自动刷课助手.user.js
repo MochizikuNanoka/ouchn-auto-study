@@ -561,12 +561,12 @@
     }
 
     async _navigateAndProcess(section) {
-      // 始终回退到课程页再导航——侧边栏点击不可靠
-      if (!isCoursePage()) {
+      // 视频页/未知页 → 回退到课程页再导航
+      // 考试页 → 不退回，直接处理（submitExam里会回退）
+      if (!isCoursePage() && !isExamPage()) {
         logger.info('回退到课程页...');
         history.back();
         await sleep(3000);
-        // 如果回退后还在非课程页（可能Spa没变），再试一次
         if (!isCoursePage()) {
           history.back();
           await sleep(3000);
