@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      1.0.7
-// @description  自动观看视频 + 自动提交考试（配合爱问答助手）— 基于课程总览页解析进度
+// @version      2.0.1
+// @description  自动观看视频 + 自动提交考试（配合爱问答助手）— v2: domIndex稳定定位，消除漂移
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
 // @grant        none
@@ -121,210 +121,132 @@
   }
 
   // ======================== 课程解析器（重写版 — 基于课程总览页） ========================
-  class CourseParser {
+    // =========  // =============== 课程模型（v2：基于 bodyText + domIndex 稳定定位） ========================
+  class CourseModel {
 
-    /** 展开所有章节和节次折叠 */
     static async expandAllChapters() {
-      // 展开所有 el-collapse-item__header（包括章节级和节次级）
-      const headers = document.querySelectorAll('.el-collapse-item__header');
+      const allItems = document.querySelectorAll('.el-collapse-item');
       let count = 0;
-      for (const h of headers) {
-        const expanded = h.getAttribute('aria-expanded') === 'true';
-        if (!expanded) {
-          try { h.click(); count++; await sleep(250); } catch (e) {}
+      for (const item of allItems) {
+        const header = item.querySelector('.el-collapse-item__header');
+        if (!header) continue;
+        if (!header.querySelector('.chapter_name')) continue;
+        if (header.getAttribute('aria-expanded') !== 'true') {
+          try { header.click(); count++; await sleep(400); } catch (e) {}
         }
       }
-      // 再扫一遍，确保嵌套的也展开了
-      if (count > 0) {
-        await sleep(800);
-        const headers2 = document.querySelectorAll('.el-collapse-item__header');
-        for (const h of headers2) {
-          const expanded = h.getAttribute('aria-expanded') === 'true';
-          if (!expanded) {
-            try { h.click(); count++; await sleep(200); } catch (e) {}
-          }
-        }
-      }
-      if (count > 0) logger.debug(`展开了 ${count} 个面板`);
+      if (count > 0) { await sleep(1000); }
+      logger.debug('展开章节: ' + count);
     }
 
-    /** 解析所有节次（含完成状态） */
-    static async parse() {
-      await CourseParser.expandAllChapters();
+    static async buildModel() {
+      await CourseModel.expandAllChapters();
       await sleep(500);
-
-      const sections = [];
-
-      // 找到所有章节 header（含 .title_vice 的）来建立分组
-      const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
-      let currentChapter = '';
-
-      for (const header of chapterHeaders) {
-        const titleVice = header.querySelector('.title_vice');
-        const chapterName = header.querySelector('.chapter_name span');
-
-        if (chapterName) {
-          // 这是一个章节头
-          currentChapter = chapterName.textContent.trim();
-          logger.debug(`章节: ${currentChapter} (${titleVice?.textContent?.trim() || '?'})`);
+      const allItems = document.querySelectorAll('.el-collapse-item');
+      logger.info('DOM中共 ' + allItems.length + ' 个 el-collapse-item');
+      const chapters = [];
+      var currentChapter = null;
+      for (var i = 0; i < allItems.length; i++) {
+        var item = allItems[i];
+        var header = item.querySelector('.el-collapse-item__header');
+        if (!header) continue;
+        var chNameEl = header.querySelector('.chapter_name span');
+        if (chNameEl) {
+          currentChapter = { name: chNameEl.textContent.trim(), chapterIdx: chapters.length, pairs: [] };
+          chapters.push(currentChapter);
           continue;
         }
-      }
-
-      // 直接找到所有 .hoverItem — 这些是节次条目
-      const hoverItems = document.querySelectorAll('.hoverItem');
-      logger.info(`找到 ${hoverItems.length} 个节次条目`);
-
-      for (let i = 0; i < hoverItems.length; i++) {
-        const item = hoverItems[i];
-
-        // 节次标题 — 多种选择器兜底
-        let title = '';
-        let isExamFromDom = false;  // DOM本身就标明是考试
-        // 视频：.section span:first-child
-        const sectionSpan = item.querySelector('.section span:first-child');
-        if (sectionSpan) title = sectionSpan.textContent.trim();
-        // 考试：.testView .section（格式："测验  X.X.X"）
-        if (!title) {
-          const testViewSpan = item.querySelector('.testView .section');
-          if (testViewSpan) {
-            title = testViewSpan.textContent.trim().replace(/\s+/g, ' ');
-            title = title.replace(/^测验\s*/, '');
-            isExamFromDom = true;  // .testView 就是考试，不用靠标题猜
+        var body = item.querySelector('.el-collapse-item__wrap');
+        var btxt = body ? body.textContent.trim() : '';
+        var durMatch = btxt.match(/（(\d{2}:\d{2}:\d{2})）/);
+        var progMatch = btxt.match(/(\d{1,3})%/);
+        var isVideo = !!durMatch;
+        var isExam = /^测验/.test(btxt);
+        if (isVideo && currentChapter) {
+          var progress = progMatch ? parseInt(progMatch[1]) : 0;
+          var vte = header.querySelector('.title span');
+          var vtitle = vte ? vte.textContent.trim() : header.textContent.trim().replace(/[\(（].*?[\)）]/g, '').trim();
+          var ve = { domIndex: i, title: vtitle, duration: durMatch ? durMatch[1] : '', progress: progress, isComplete: progress >= 100 };
+          var existPair = null;
+          for (var pi = 0; pi < currentChapter.pairs.length; pi++) {
+            if (currentChapter.pairs[pi].video === null && currentChapter.pairs[pi].exam && currentChapter.pairs[pi].exam.title === vtitle) {
+              existPair = currentChapter.pairs[pi]; break;
+            }
+          }
+          if (existPair) { existPair.video = ve; }
+          else { currentChapter.pairs.push({ video: ve, exam: null }); }
+        } else if (isExam && currentChapter) {
+          var stMatch = btxt.match(/章节测试[：:]\s*(.+)/);
+          var status = stMatch ? stMatch[1].trim() : '未知';
+          var ete = header.querySelector('.title span');
+          var etitle = ete ? ete.textContent.trim() : header.textContent.trim().replace(/[\(（].*?[\)）]/g, '').trim();
+          var ee = { domIndex: i, title: etitle, status: status, isComplete: status === '合格' };
+          var mpair = null;
+          for (var mpi = 0; mpi < currentChapter.pairs.length; mpi++) {
+            if (!currentChapter.pairs[mpi].exam && currentChapter.pairs[mpi].video && currentChapter.pairs[mpi].video.title === etitle) {
+              mpair = currentChapter.pairs[mpi]; break;
+            }
+          }
+          if (mpair) { mpair.exam = ee; }
+          else {
+            var hv = false;
+            for (var cpi = 0; cpi < currentChapter.pairs.length; cpi++) {
+              if (currentChapter.pairs[cpi].video && currentChapter.pairs[cpi].video.title === etitle) { hv = true; break; }
+            }
+            if (!hv) { currentChapter.pairs.push({ video: null, exam: ee }); }
           }
         }
-        if (!title) {
-          // 备用：找最近的 header
-          const header = item.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header .title');
-          if (header) title = header.textContent.trim();
-        }
-        // 跳过空标题（可能是占位元素）
-        if (!title) {
-          logger.debug(`跳过空标题项 #${i}`);
-          continue;
-        }
-
-        // 时长
-        const durationSpan = item.querySelector('.section span:last-child');
-        const duration = durationSpan?.textContent?.trim() || '';
-
-        // 进度 — loadingLinear 文字（多种兜底）
-        let progress = 0;
-        const ll = item.querySelector('.loadingLinear');
-        if (ll) {
-          const t = ll.textContent.trim();
-          progress = parseFloat(t);
-          if (isNaN(progress)) progress = 0;
-        } else {
-          // 考试：.content_vice 文字
-          const cv = item.querySelector('.content_vice');
-          if (cv) {
-            const cvText = cv.textContent.trim();
-            if (cvText.includes('合格')) progress = 100;
-            else progress = 0;  // 未进行、未通过等一律当未完成
-          }
-        }
-
-        // 判断完成
-        const isComplete = progress >= 100;
-
-        // 图标类型判断
-        const iconUse = item.querySelector('.iconSvg use');
-        const iconHref = iconUse?.getAttribute?.('xlink:href') || iconUse?.getAttribute?.('href') || '';
-
-        // 判断类型：DOM有.testView就是考试，否则看标题
-        let type = isExamFromDom ? 'exam' : CourseParser.detectType(title);
-
-        // 找到父级章节
-        let chapter = '';
-        let parent = item.parentElement;
-        while (parent) {
-          const chName = parent.querySelector('.chapter_name span');
-          if (chName) { chapter = chName.textContent.trim(); break; }
-          parent = parent.parentElement;
-        }
-
-        sections.push({
-          index: i,
-          domIndex: i,  // DOM顺序索引，导航时直接用
-          title,
-          duration,
-          progress,
-          isComplete,
-          type,
-          chapter,
-        });
       }
-
-      // 统计
-      const videos = sections.filter(s => s.type === 'video');
-      const exams = sections.filter(s => s.type === 'exam');
-      const completed = sections.filter(s => s.isComplete);
-      const remaining = sections.filter(s => !s.isComplete);
-
-      logger.info(`解析结果: ${sections.length} 个节次`);
-      logger.info(`  视频: ${videos.length} | 考试: ${exams.length}`);
-      logger.info(`  已完成: ${completed.length} | 待处理: ${remaining.length}`);
-
-      return sections;
+      var tv = 0, te = 0, dv = 0, de = 0;
+      for (var ci = 0; ci < chapters.length; ci++) {
+        for (var pj = 0; pj < chapters[ci].pairs.length; pj++) {
+          if (chapters[ci].pairs[pj].video) { tv++; if (chapters[ci].pairs[pj].video.isComplete) dv++; }
+          if (chapters[ci].pairs[pj].exam) { te++; if (chapters[ci].pairs[pj].exam.isComplete) de++; }
+        }
+      }
+      logger.info('课程模型: ' + chapters.length + ' 个章节, ' + tv + ' 视频, ' + te + ' 考试 (' + dv + '/' + de + ' 完成)');
+      return { chapters: chapters };
     }
 
-    /** 判断节次类型 */
-    static detectType(title) {
-      if (/^(任务[一二三四五六七八九十]|测验)/.test(title)) return 'exam';
-      return 'video';
-    }
-
-    /** 在DOM中查找节次对应的可点击按钮（el-collapse-item__header） */
-    static findSectionHeader(title) {
-      // 遍历所有 el-collapse-item__header，找到包含目标标题的那个
-      const headers = document.querySelectorAll('.el-collapse-item__header');
-      for (const header of headers) {
-        // 排除章节级 header（含有 chapter_name 的）
-        if (header.querySelector('.chapter_name')) continue;
-        const headerText = header.textContent.trim();
-        // 精确匹配或包含匹配
-        if (headerText === title || headerText.includes(title.substring(0, 8))) {
-          return header;
-        }
-      }
-      return null;
-    }
-
-    /** 在DOM中查找节次的进度元素（.hoverItem 或 .testView，用于解析数据） */
-    static findSectionByTitle(title, type) {
-      // 按类型优先：type='exam' 先搜 .testView，避免与同名视频标题冲突
-      if (type === 'exam') {
-        const examItems = document.querySelectorAll('.testView .section');
-        for (const item of examItems) {
-          const t = item.textContent.trim().replace(/\s+/g, ' ');
-          if (t === title || t.includes(title) || title.includes(t.replace(/^测验\s*/, ''))) {
-            return item.closest('.hoverItem') || item.closest('[class*="content"]');
+    static getPendingTasks(chapters) {
+      var tasks = [];
+      for (var ci = 0; ci < chapters.length; ci++) {
+        var ch = chapters[ci];
+        for (var pj = 0; pj < ch.pairs.length; pj++) {
+          var pair = ch.pairs[pj];
+          if (pair.video && !pair.video.isComplete) {
+            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'video', title: pair.video.title, domIndex: pair.video.domIndex, progress: pair.video.progress });
+          }
+          if (pair.exam && !pair.exam.isComplete) {
+            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'exam', title: pair.exam.title, domIndex: pair.exam.domIndex, status: pair.exam.status });
           }
         }
       }
-      // 视频搜索（对所有类型都执行回退）
-      const videoItems = document.querySelectorAll('.hoverItem .section span:first-child');
-      for (const item of videoItems) {
-        if (item.textContent.trim() === title) {
-          return item.closest('.hoverItem');
+      return tasks;
+    }
+
+    static async navigateToDomIndex(domIndex, taskTitle, taskType) {
+      var allItems = document.querySelectorAll('.el-collapse-item');
+      if (domIndex >= allItems.length) { logger.error('domIndex ' + domIndex + ' 越界(共' + allItems.length + '个)'); return false; }
+      var targetItem = allItems[domIndex];
+      if (targetItem.offsetParent === null) {
+        var wrap = targetItem.closest('.el-collapse-item__wrap');
+        var pItem = wrap ? wrap.closest('.el-collapse-item') : null;
+        var pHdr = pItem ? pItem.querySelector('.el-collapse-item__header') : null;
+        if (pHdr && pHdr.querySelector('.chapter_name') && pHdr.getAttribute('aria-expanded') !== 'true') {
+          pHdr.click(); await sleep(800);
         }
       }
-      // 非 exam 类型的考试回退搜索
-      if (type !== 'exam') {
-        const examItems = document.querySelectorAll('.testView .section');
-        for (const item of examItems) {
-          const t = item.textContent.trim().replace(/\s+/g, ' ');
-          if (t === title || t.includes(title) || title.includes(t.replace(/^测验\s*/, ''))) {
-            return item.closest('.hoverItem') || item.closest('[class*="content"]');
-          }
-        }
-      }
-      return null;
+      targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await sleep(400);
+      var ct = targetItem.querySelector('.section') || targetItem.querySelector('.content_main') || targetItem.querySelector('.el-collapse-item__header');
+      if (!ct) { logger.error('domIndex ' + domIndex + ': 找不到可点击元素'); return false; }
+      ct.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      logger.info('导航: [' + domIndex + '][' + taskType + '] ' + taskTitle);
+      return true;
     }
   }
-
-  // ======================== 视频处理器 ========================
+// ======================== 视频处理器 ========================
   class VideoHandler {
     static async waitForCompletion() {
       logger.info('等待视频播放完成...');
@@ -459,7 +381,7 @@
       history.back();
       await sleep(2000);
 
-      await sleep(2000);
+      await sleep(3000);
       return true;
     }
   }
@@ -480,7 +402,7 @@
       this._loopRunning = false;
       this.currentIndex = 0;
       this.sections = [];
-      this.pendingSections = []; // 未完成的节次
+      this.tasks = []; // v2待处理任务
       this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
     }
 
@@ -499,7 +421,7 @@
       this.paused = false;
 
       logger.info('========================================');
-      logger.info('===== 自动刷课助手启动 =====');
+      logger.info('=== 自动刷课助手 v2 (domIndex定位) ===');
       logger.info('========================================');
 
       // 如果在非课程页，先跳转回课程页
@@ -510,35 +432,37 @@
         if (!isCoursePage()) { logger.error('无法返回课程页'); this.stop(); return; }
       }
 
-      // 解析课程目录
-      const allSections = await CourseParser.parse();
-      if (allSections.length === 0) { logger.error('未找到课程节次'); this.stop(); return; }
+      // 构建课程模型
+      const model = await CourseModel.buildModel();
+      // v2: model already validated by buildModel()
 
       // 过滤出未完成的
-      this.pendingSections = allSections.filter(s => !s.isComplete);
-      this.sections = allSections;
+      this.tasks = CourseModel.getPendingTasks(model.chapters);
+      
 
-      if (this.pendingSections.length === 0) {
+      if (this.tasks.length === 0) {
         logger.success('所有节次已完成');
         this.stop();
         return;
       }
 
-      logger.info(`待处理: ${this.pendingSections.length} 个节次`);
+      logger.info("待处理: " + this.tasks.length + " 个任务");
 
-      // 自动定位：找第一个未完成的节次
-      const firstIncomplete = allSections.find(s => !s.isComplete);
-      if (firstIncomplete) {
-        const indexInPending = this.pendingSections.findIndex(s => s.title === firstIncomplete.title);
-        this.currentIndex = indexInPending >= 0 ? indexInPending : 0;
-        logger.info(`定位起始节次: "${firstIncomplete.title}" (进度 ${firstIncomplete.progress}%)`);
-      }
-
-      // 如果之前有保存的进度且更大，用保存的
-      const restored = this.restoreState();
-      if (restored && restored.currentIndex > this.currentIndex) {
-        logger.info(`恢复进度: 第 ${restored.currentIndex + 1} 个`);
-        this.currentIndex = restored.currentIndex;
+            // v2: 从保存的状态恢复进度
+      const savedState = StateManager.load();
+      if (savedState && savedState.chapterIdx !== undefined) {
+        this.currentIndex = 0;
+        for (var si = 0; si < this.tasks.length; si++) {
+          if (this.tasks[si].chapterIdx === savedState.chapterIdx &&
+              this.tasks[si].pairIdx === savedState.pairIdx &&
+              this.tasks[si].itemType === savedState.itemType) {
+            this.currentIndex = si; break;
+          }
+        }
+        logger.info("恢复进度: #" + (this.currentIndex + 1) + " " + this.tasks[this.currentIndex].title);
+      } else {
+        this.currentIndex = 0;
+        logger.info("定位起始: " + this.tasks[0].title);
       }
 
       this._saveState();
@@ -578,28 +502,29 @@
         return;
       }
       this._loopRunning = true;
+      this._reloading = false;
       this._startWatchdog();
-      while (this.running && this.currentIndex < this.pendingSections.length) {
+      while (this.running && this.currentIndex < this.tasks.length) {
         if (this.paused) { await sleep(1000); continue; }
         if (this._reloading) { await sleep(2000); continue; }
 
-        const section = this.pendingSections[this.currentIndex];
-        if (!section) {
-          logger.error(`索引${this.currentIndex}越界(pending共${this.pendingSections.length}个)，重置扫描`);
+        const task = this.tasks[this.currentIndex];
+        if (!task) {
+          logger.error(`索引${this.currentIndex}越界(pending共${this.tasks.length}个)，重置扫描`);
           this.currentIndex = 0;
           await sleep(1000);
           continue;
         }
-        logger.info(`\n--- [${this.currentIndex + 1}/${this.pendingSections.length}] ${section.title} ---`);
-        logger.info(`Type: ${section.type} | Progress: ${section.progress}% | Chapter: ${section.chapter}`);
+        logger.info(`\n--- [${this.currentIndex + 1}/${this.tasks.length}] ${task.title} ---`);
+        logger.info(`Type: ${task.itemType} | Chapter: ${task.chapterName}`);
 
         // 二次确认：当前节次是否真的未完成
         if (isCoursePage()) {
-          const recheckItem = CourseParser.findSectionByTitle(section.title, section.type);
+          var recheckItem = document.querySelectorAll('.el-collapse-item')[task.domIndex];
           if (recheckItem) {
             const ll = recheckItem.querySelector('.loadingLinear');
             if (ll && parseFloat(ll.textContent) >= 100) {
-              logger.warn(`二次确认: ${section.title} 已完成(>=100%)，跳过`);
+              logger.warn(`二次确认: ${task.title} 已完成(>=100%)，跳过`);
               this.currentIndex++;
               this._saveState();
               continue;
@@ -609,11 +534,11 @@
 
         let success = false;
         try {
-          success = await this._navigateAndProcess(section);
+          success = await this._navigateAndProcess(task);
           this._longOperation = false;
           this._lastProgressTime = Date.now();
           if (success) {
-            if (section.type === 'video') this.stats.videos++;
+            if (task.itemType === 'video') this.stats.videos++;
             else this.stats.exams++;
           } else {
             this.stats.errors++;
@@ -641,7 +566,7 @@
       logger.info(`视频: ${this.stats.videos} | 考试: ${this.stats.exams} | 错误: ${this.stats.errors}`);
     }
 
-    async _navigateAndProcess(section) {
+    async _navigateAndProcess(task) {
       // 视频页/未知页 → 回退到课程页再导航
       // 考试页 → 不退回，直接处理（submitExam里会回退）
       if (!isCoursePage() && !isExamPage()) {
@@ -667,72 +592,13 @@
         }
       }
 
-      // ===== 导航核心：优先标题匹配，domIndex作最后回退 =====
-      // 确保目标章节展开
-      if (section.chapter) {
-        const chapterHeaders = document.querySelectorAll('.el-collapse-item__header');
-        for (const ch of chapterHeaders) {
-          const cn = ch.querySelector('.chapter_name span');
-          if (cn && cn.textContent.trim() === section.chapter) {
-            if (ch.getAttribute('aria-expanded') !== 'true') {
-              ch.click();
-              await sleep(600);
-            }
-            break;
-          }
-        }
-      }
-
-      // 方法1: 标题匹配（不受DOM折叠影响）
-      let hoverItem = CourseParser.findSectionByTitle(section.title, section.type);
-      let matchMethod = 'title';
-
-      // 方法2: 找不到就全展开后再按标题搜索
-      if (!hoverItem || hoverItem.offsetParent === null) {
-        await CourseParser.expandAllChapters();
-        await sleep(500);
-        const allItems = document.querySelectorAll('.hoverItem');
-        for (const item of allItems) {
-          const secSpan = item.querySelector('.section span:first-child');
-          const testSpan = item.querySelector('.testView .section');
-          const itemTitle = (secSpan?.textContent?.trim() || testSpan?.textContent?.trim() || '').replace(/\s+/g, ' ');
-          if (itemTitle === section.title || itemTitle.includes(section.title.substring(0, 8))) {
-            hoverItem = item;
-            matchMethod = 'title-fullexpand';
-            break;
-          }
-        }
-        // 方法3: domIndex终极回退
-        if (!hoverItem) {
-          hoverItem = allItems[section.domIndex];
-          matchMethod = 'domIndex';
-        }
-      }
-
-      if (!hoverItem) {
-        logger.warn(`未找到节次: ${section.title}，跳过`);
+      // ===== v2 导航：domIndex 直接定位，不再依赖文本匹配 =====
+      var navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
+      if (!navOk) {
+        logger.warn('导航失败: [' + task.itemType + '] ' + task.title + ', 跳过');
         return false;
       }
-      logger.debug(`导航定位: ${matchMethod} -> "${section.title}"`);
-
-      // 确保父级可见
-      if (hoverItem.offsetParent === null) {
-        const wrap = hoverItem.closest('.el-collapse-item__wrap');
-        const header = wrap?.closest('.el-collapse-item')?.querySelector('.el-collapse-item__header');
-        if (header && header.getAttribute('aria-expanded') !== 'true') {
-          header.click();
-          await sleep(800);
-        }
-      }
-
-      // 滚动到可见
-      hoverItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await sleep(500);
-
-      // 点击目标：统一用 .section（导航触发点），.testView 只是容器不会触发导航
-      const clickTarget = hoverItem.querySelector('.section') || hoverItem.querySelector('.content_main') || hoverItem;
-      clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      logger.debug(`已触发点击: ${section.title}`);
+      logger.debug(`已触发点击: ${task.title}`);
 
       await sleep(1000);
       await sleep(3000);
@@ -782,7 +648,12 @@
             return false;
           }
           const done = await ExamHandler.waitForPlugin();
-          if (!done) return false;
+          if (!done) {
+            logger.warn('答题插件超时，回退课程页...');
+            history.back();
+            await sleep(3000);
+            return false;
+          }
           await sleep(2000);
           return await ExamHandler.submitExam();
         }
@@ -792,23 +663,20 @@
           const hint = detectOrderHint();
           if (hint) {
             logger.warn(`平台提示应先完成: "${hint}"`);
-            // 用hint搜索正确的节次
-            const hintItem = CourseParser.findSectionByTitle(hint);
-            if (hintItem && hintItem !== hoverItem) {
-              logger.info(`纠错: 按平台提示导航到 "${hint}"`);
-              hintItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              await sleep(300);
-              const hintClickTarget = hintItem.querySelector('.section') || hintItem.querySelector('.content_main') || hintItem;
-              hintClickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            // v2: 在 tasks 中查找匹配的节次，按 domIndex 重导航
+            const match = this.tasks.find(t => hint.includes(t.title) || t.title.includes(hint));
+            if (match) {
+              logger.info(`纠错: 按平台提示导航到 "${match.title}" [domIndex:${match.domIndex}]`);
+              await CourseModel.navigateToDomIndex(match.domIndex, match.title, match.itemType);
               await sleep(3000);
               continue;
             }
-            logger.warn(`提示节次 "${hint}" 未在DOM中找到`);
+            logger.warn(`提示节次 "${hint}" 未在待处理列表中匹配到`);
           }
           logger.debug('仍在课程页，等待跳转...');
           // 可能是点击没生效，重试点击
           if (retry === 2) {
-            clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
             logger.debug('重新触发点击...');
           }
           await sleep(2000);
@@ -842,21 +710,26 @@
     }
 
     _currentTitle() {
-      if (this.currentIndex < this.pendingSections.length) return this.pendingSections[this.currentIndex].title;
+      if (this.currentIndex < this.tasks.length) return this.tasks[this.currentIndex].title;
       return '未知';
     }
 
     _saveState() {
-      const section = this.pendingSections[this.currentIndex];
-      StateManager.save({
-        currentIndex: this.currentIndex,
-        currentTitle: section?.title || '',
-        stats: this.stats,
-        timestamp: Date.now(),
-      });
+      if (this.currentIndex < this.tasks.length) {
+        const task = this.tasks[this.currentIndex];
+        StateManager.save({
+          chapterIdx: task.chapterIdx,
+          pairIdx: task.pairIdx,
+          itemType: task.itemType,
+          title: task.title,
+          totalTasks: this.tasks.length,
+          stats: this.stats,
+          timestamp: Date.now(),
+        });
+      }
     }
 
-    _markReload() {
+_markReload() {
       if (this._reloading) return;
       this._reloading = true;
       this._saveState();
@@ -990,7 +863,7 @@
       st.textContent = running ? '运行中' : paused ? '已暂停' : '待命';
 
       const sb = this.panel.querySelector('#sb');
-      const total = ap.pendingSections.length || 0;
+      const total = ap.tasks.length || 0;
       sb.innerHTML = `<span>video <b class="ok">${ap.stats.videos}</b></span>
         <span>exam <b class="ok">${ap.stats.exams}</b></span>
         <span>err <b class="er">${ap.stats.errors}</b></span>
@@ -1006,7 +879,7 @@
         const m = text.match(/@version\s+([\d.]+)/);
         if (!m) { logger.warn('未找到远端版本号'); return; }
         const remoteVer = m[1];
-        const localVer = '1.0.7';
+        const localVer = '2.0.1';
         if (remoteVer !== localVer) {
           logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），正在打开下载页...`);
           window.open('https://github.com/MochizikuNanoka/ouchn-auto-study/releases', '_blank');
@@ -1075,6 +948,10 @@
             await sleep(3000);
             ap._reloading = true;
             await ap.start();
+          }).catch(e => {
+            logger.error('视频恢复异常: ' + e.message, e.stack);
+            ap._reloading = true;
+            ap.start();
           });
         } else if (isExamPage()) {
           logger.info(`恢复考试处理: "${saved.currentTitle || '?'}"`);
@@ -1094,20 +971,24 @@
             }
             ap._reloading = true;
             await ap.start();
+          }).catch(e => {
+            logger.error('考试恢复异常: ' + e.message, e.stack);
+            ap._reloading = true;
+            ap.start();
           });
         } else if (isCoursePage()) {
           logger.info('课程页已恢复，重新解析并继续...');
           ap._reloading = true;
           await sleep(1500);
-          const allSections = await CourseParser.parse();
-          ap.pendingSections = allSections.filter(s => !s.isComplete);
-          ap.sections = allSections;
-          if (ap.pendingSections.length === 0) {
+          const model = await CourseModel.buildModel();
+          ap.tasks = CourseModel.getPendingTasks(model.chapters);
+          
+          if (ap.tasks.length === 0) {
             logger.success('所有节次已完成');
             StateManager.clear();
             return;
           }
-          logger.info(`待处理: ${ap.pendingSections.length} 个节次`);
+          logger.info(`待处理: ${ap.tasks.length} 个节次`);
           ap.running = true;
           ap._startWatchdog();
           await ap.start();
