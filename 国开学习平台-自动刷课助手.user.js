@@ -2,7 +2,7 @@
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
 // @version      2.0.1
-// @description  自动观看视频 + 自动提交考试（配合爱问答助手）— v2: domIndex稳定定位，消除漂移
+// @description  国开学习平台(电大中专)自动刷课助手 — 自动播放视频 + 配合爱问答助手自动交卷，支持断点续传，v2 domIndex 稳定定位消除漂移
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
 // @grant        none
