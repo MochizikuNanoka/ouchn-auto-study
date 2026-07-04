@@ -226,8 +226,17 @@
     }
 
     static async navigateToDomIndex(domIndex, taskTitle, taskType) {
-      var allItems = document.querySelectorAll('.el-collapse-item');
-      if (domIndex >= allItems.length) { logger.error('domIndex ' + domIndex + ' 越界(共' + allItems.length + '个)'); return false; }
+      // 从考试页/视频页回退后 Vue 可能还没渲染完 DOM，等待重试
+      var allItems;
+      for (let retry = 0; retry < 5; retry++) {
+        allItems = document.querySelectorAll('.el-collapse-item');
+        if (allItems.length > 0 && domIndex < allItems.length) break;
+        await sleep(1500);
+      }
+      if (domIndex >= allItems.length) {
+        logger.error('domIndex ' + domIndex + ' 越界(共' + allItems.length + '个)，Vue可能未渲染完成');
+        return false;
+      }
       var targetItem = allItems[domIndex];
       if (targetItem.offsetParent === null) {
         var wrap = targetItem.closest('.el-collapse-item__wrap');
