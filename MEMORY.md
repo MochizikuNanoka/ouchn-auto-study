@@ -13,6 +13,8 @@
 - Video completion requires a post-completion delay so platform-side study progress can persist before navigation.
 - Browser errors should preserve enough state for recovery but must not silently skip a task.
 - Course-directory readiness is a stable-DOM condition: wait for chapter headers, then for expanded course items, and log compact `[CourseDirectory]` snapshots when either condition is absent.
+- The injected control panel is outside the platform Vue root (`#app`); never scan the whole document for a bare `500`, because diagnostic lines such as `500=false` would self-trigger the recovery path. Scope platform error text to `#app` and retain visible platform error-toast checks.
+- Task navigation must open collapsed ancestor course items from outermost to innermost before dispatching its task click. Do not expand every task row during model construction.
 - Recovery attempts are intentionally unlimited; exponential delay remains capped to avoid repeatedly hammering the platform.
 - Update checking is based on the latest published GitHub Release tag and numeric version comparison, never branch-file inequality.
 
@@ -20,4 +22,4 @@
 
 - Use the Node built-in regression harness in `tests/autoplayer-regression.test.js` plus JavaScript syntax and whitespace checks.
 - Live platform validation requires a logged-in browser session and may be blocked by CAPTCHA or expired authentication; never record credentials here.
-- On 2026-07-10, the Windows browser-control helper could not verify the current Edge URL and stopped before live inspection. Local regression tests are the verification fallback for v2.0.3.
+- On 2026-07-10, the Codex Edge browser connection inspected an authenticated course page: `#app` excluded the injected panel, and a chapter button changed from `aria-expanded=false` to `true` on click. Browser security policy blocks visiting `edge://extensions`, so Tampermonkey script installation remains user-operated; local regression tests verify the release artifact.

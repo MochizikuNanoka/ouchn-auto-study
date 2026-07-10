@@ -1,5 +1,5 @@
 ﻿<p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.3-%23D4893B" alt="version">
+  <img src="https://img.shields.io/badge/version-2.0.4-%23D4893B" alt="version">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="platform">
   <img src="https://img.shields.io/badge/browser-Edge%20%7C%20Chrome-blue" alt="browser">
 </p>
@@ -22,7 +22,7 @@
 | 自动交卷 | 检测爱问答助手答题完成 → 自动交卷 → 确认 → 查看试卷 → 返回课程页 |
 | 500 容错 | 页面出错自动 F5 刷新，跨刷新持久化指数退避；持续恢复，不再因次数上限停止 |
 | 断点续传 | 进度存 localStorage（key `ouchn_autoplay_v2`），页面刷新/崩溃后按课程 ID + 章节/节次/类型自动恢复 |
-| 目录诊断 | 目录必须稳定渲染并展开出课程条目才解析；浏览器日志会输出 `[CourseDirectory]` 诊断摘要 |
+| 目录诊断 | 目录必须稳定渲染并展开出课程条目才解析；仅检查平台页面错误，不会把助手日志中的 `500` 误判为服务器错误 |
 | 看门狗 | 超过 120 秒无进展自动 F5 恢复 |
 | 顺序纠错 | 平台弹"请先完成 X.X"时自动匹配并导航到正确节次 |
 | 调试面板 | 可手动指定节次索引、重置进度、检查更新 |
@@ -112,6 +112,7 @@ CourseModel.buildModel()
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| 2.0.4 | 2026-07-10 | 修复助手诊断日志被误判为 500 导致章节无法展开；任务导航会按需展开父级目录 |
 | 2.0.3 | 2026-07-10 | 修复课程目录路由切换时的渲染竞争；移除恢复次数上限；更新检查改为比较 GitHub 最新 Release 版本 |
 | 2.0.2 | 2026-07-10 | 修复 500/F5 后无法续跑；恢复状态持久化并按课程 ID 隔离；视频结束统一等待 10 秒；失败任务不再静默跳过 |
 | 2.0.1 | 2026-07-05 | 修复 task-is-not-defined、_reloading 死循环、waitForPlugin 超时恢复、Promise 异常处理 |

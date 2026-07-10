@@ -101,7 +101,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map() 
   assert.notEqual(instrumented, source, 'ControlPanel test replacement point is missing');
   instrumented = instrumented.replace(
     initMarker,
-    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
+    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, is500Error: typeof is500Error === 'function' ? is500Error : undefined, init, shouldAutoResume };\n\n" + initMarker,
   );
   vm.runInNewContext(instrumented, context, { filename: scriptPath });
 
@@ -223,6 +223,56 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('v2.0.2', '2.0.2'), 0);
   assert.equal(compareVersions('v2.0.10', '2.0.3'), 1);
   assert.equal(compareVersions('invalid', '2.0.3'), null);
+});
+
+test('does not mistake the injected diagnostic panel for a platform 500 error', () => {
+  const harness = createHarness();
+  harness.context.document.body.innerText = '[DEBUG] [CourseDirectory] stable-ready: 500=false';
+  harness.selectors.set('#app', { innerText: '课程目录已加载' });
+
+  assert.equal(harness.hooks.is500Error(), false);
+
+  harness.selectors.set('#app', { innerText: '500 Internal Server Error' });
+  assert.equal(harness.hooks.is500Error(), true);
+});
+
+test('opens collapsed task ancestors from outermost to innermost', async () => {
+  const harness = createHarness();
+  const clicks = [];
+  const makeHeader = name => ({
+    getAttribute(attribute) {
+      return attribute === 'aria-expanded' ? 'false' : null;
+    },
+    click() {
+      clicks.push(name);
+    },
+  });
+  const outerHeader = makeHeader('chapter');
+  const innerHeader = makeHeader('section');
+  const outerItem = {
+    classList: { contains: value => value === 'el-collapse-item' },
+    parentElement: null,
+    querySelector: selector => selector === '.el-collapse-item__header' ? outerHeader : null,
+  };
+  const outerWrap = { classList: { contains: () => false }, parentElement: outerItem };
+  const innerItem = {
+    classList: { contains: value => value === 'el-collapse-item' },
+    parentElement: outerWrap,
+    querySelector: selector => selector === '.el-collapse-item__header' ? innerHeader : null,
+  };
+  const innerWrap = { classList: { contains: () => false }, parentElement: innerItem };
+  const targetItem = { parentElement: innerWrap };
+
+  const pending = harness.hooks.CourseModel.expandCollapsedAncestors(targetItem);
+  await flushPromises();
+  assert.deepEqual(clicks, ['chapter']);
+
+  harness.advance(400);
+  await flushPromises();
+  assert.deepEqual(clicks, ['chapter', 'section']);
+
+  harness.advance(400);
+  assert.equal(await pending, 2);
 });
 
 test('waits for a stable course directory rather than one transient DOM node', async () => {

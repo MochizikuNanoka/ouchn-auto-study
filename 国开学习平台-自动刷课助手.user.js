@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.3
+// @version      2.0.4
 // @description  国开学习平台(电大中专)自动刷课助手 — 自动播放视频 + 配合爱问答助手自动交卷，支持可靠断点续传，v2 domIndex 稳定定位消除漂移
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.3',
+    VERSION: '2.0.4',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     NAVIGATION_TIMEOUT: 15000,
@@ -84,8 +84,16 @@
 
   function is500Error() {
     const serverError = /(?:\b500\b|服务器错误|Internal Server Error)/i;
-    const body = document.body?.innerText || '';
-    if (serverError.test(body)) return true;
+    const platformRoot = document.querySelector('#app');
+    const platformText = platformRoot?.innerText || '';
+    if (serverError.test(platformText)) return true;
+
+    if (!platformRoot) {
+      const body = document.body?.innerText || '';
+      const panelText = document.querySelector('#ouchn-ap-v2')?.innerText || '';
+      const bodyWithoutPanel = panelText ? body.replace(panelText, '') : body;
+      if (serverError.test(bodyWithoutPanel)) return true;
+    }
 
     return [...document.querySelectorAll('.el-message--error')].some(el => {
       if (el.offsetParent === null) return false;
@@ -342,6 +350,25 @@
       return tasks;
     }
 
+    static async expandCollapsedAncestors(targetItem) {
+      const ancestors = [];
+      let node = targetItem.parentElement;
+      while (node) {
+        if (node.classList?.contains('el-collapse-item')) ancestors.unshift(node);
+        node = node.parentElement;
+      }
+
+      let count = 0;
+      for (const item of ancestors) {
+        const header = item.querySelector('.el-collapse-item__header');
+        if (header?.getAttribute('aria-expanded') !== 'false') continue;
+        header.click();
+        count++;
+        await sleep(400);
+      }
+      return count;
+    }
+
     static async navigateToDomIndex(domIndex, taskTitle, taskType) {
       // 从考试页/视频页回退后 Vue 可能还没渲染完 DOM，等待重试
       var allItems;
@@ -361,14 +388,8 @@
         logger.warn('domIndex ' + domIndex + ' 标题不匹配，拒绝误点: "' + actualTitle + '"');
         return false;
       }
-      if (targetItem.offsetParent === null) {
-        var wrap = targetItem.closest('.el-collapse-item__wrap');
-        var pItem = wrap ? wrap.closest('.el-collapse-item') : null;
-        var pHdr = pItem ? pItem.querySelector('.el-collapse-item__header') : null;
-        if (pHdr && pHdr.querySelector('.chapter_name') && pHdr.getAttribute('aria-expanded') !== 'true') {
-          pHdr.click(); await sleep(800);
-        }
-      }
+      const openedAncestors = await CourseModel.expandCollapsedAncestors(targetItem);
+      if (openedAncestors > 0) logger.debug('按需展开父级目录: ' + openedAncestors);
       targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(400);
       var ct = targetItem.querySelector('.section') || targetItem.querySelector('.content_main') || targetItem.querySelector('.el-collapse-item__header');

@@ -1,10 +1,17 @@
-# v2.0.3 Technical Specification
+# v2.0.4 Technical Specification
 
 ## Directory Diagnostics
 
 - Add a structured `CourseModel` diagnostic result for each failed readiness condition: no collapse items, no chapter headers, no parseable task entries, and detected server error.
 - Emit the result through the existing `Logger`, including route, DOM counts, visible error text summary, and retry state. Do not record credentials or full page text.
 - Keep the existing bootstrap recovery state when parsing fails.
+
+## Server Error Boundary and Expansion
+
+- Detect error text from the platform Vue root (`#app`) rather than the entire document, because the injected control panel contains diagnostic strings such as `500=false`.
+- Preserve visible `.el-message--error` checks for platform error toasts.
+- Expand only chapter-level collapse items during model construction; opening every task row would add avoidable delay.
+- When navigating to a target task, expand each collapsed ancestor collapse item from outermost to innermost before dispatching the task click.
 
 ## Retry Policy
 
@@ -27,4 +34,4 @@ node --test .\tests\autoplayer-regression.test.js
 git diff --check
 ```
 
-Live Edge verification focuses on: slow/failed directory recovery, F5 continuation, and update-panel behavior against the actual latest Release.
+Live Edge verification focuses on: normal directory expansion in the presence of diagnostic logs, slow/failed directory recovery, F5 continuation, and update-panel behavior against the actual latest Release.
