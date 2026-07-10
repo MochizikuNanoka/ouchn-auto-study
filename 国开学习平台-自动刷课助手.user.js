@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.1
-// @description  国开学习平台(电大中专)自动刷课助手 — 自动播放视频 + 配合爱问答助手自动交卷，支持断点续传，v2 domIndex 稳定定位消除漂移
+// @version      2.0.3
+// @description  国开学习平台(电大中专)自动刷课助手 — 自动播放视频 + 配合爱问答助手自动交卷，支持可靠断点续传，v2 domIndex 稳定定位消除漂移
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
 // @grant        none
@@ -14,12 +14,18 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
+    VERSION: '2.0.3',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     NAVIGATION_TIMEOUT: 15000,
+    COURSE_DIRECTORY_TIMEOUT: 30000,
+    COURSE_DIRECTORY_STABLE_MS: 1500,
+    COURSE_DIRECTORY_POLL_INTERVAL: 500,
     RETRY_DELAY_BASE: 2000,
     RETRY_DELAY_MAX: 30000,
-    MAX_RETRIES: 5,
+    NAVIGATION_ATTEMPTS: 5,
+    RELEASE_API_URL: 'https://api.github.com/repos/MochizikuNanoka/ouchn-auto-study/releases/latest',
+    VIDEO_POST_COMPLETE_DELAY: 10000,
     STORAGE_KEY: 'ouchn_autoplay_v2',
   };
 
@@ -77,10 +83,40 @@
   }
 
   function is500Error() {
+    const serverError = /(?:\b500\b|服务器错误|Internal Server Error)/i;
     const body = document.body?.innerText || '';
-    return body.includes('500') || body.includes('服务器错误') ||
-           body.includes('Internal Server Error') ||
-           !!document.querySelector('.el-message--error');
+    if (serverError.test(body)) return true;
+
+    return [...document.querySelectorAll('.el-message--error')].some(el => {
+      if (el.offsetParent === null) return false;
+      return serverError.test(el.textContent || '');
+    });
+  }
+
+  function getCourseIdFromHash(hash = window.location.hash) {
+    const queryIndex = hash.indexOf('?');
+    if (queryIndex < 0) return '';
+    const params = new URLSearchParams(hash.slice(queryIndex + 1));
+    return params.get('courseId') || params.get('id') || '';
+  }
+
+  function courseOverviewHash(courseId) {
+    return courseId ? `#/myCourse/study?id=${encodeURIComponent(courseId)}` : '#/myCourse/study';
+  }
+
+  function compareVersions(left, right) {
+    const parse = value => {
+      const match = String(value || '').trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$/i);
+      return match ? [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)] : null;
+    };
+    const leftParts = parse(left);
+    const rightParts = parse(right);
+    if (!leftParts || !rightParts) return null;
+    for (let index = 0; index < leftParts.length; index++) {
+      if (leftParts[index] > rightParts[index]) return 1;
+      if (leftParts[index] < rightParts[index]) return -1;
+    }
+    return 0;
   }
 
   function isCoursePage() {
@@ -124,6 +160,75 @@
     // =========  // =============== 课程模型（v2：基于 bodyText + domIndex 稳定定位） ========================
   class CourseModel {
 
+    static getDirectorySnapshot() {
+      const allItems = document.querySelectorAll('.el-collapse-item');
+      const headers = document.querySelectorAll('.el-collapse-item__header');
+      const chapterCount = [...headers].filter(header => !!header.querySelector('.chapter_name')).length;
+      return {
+        route: window.location.hash.split('?')[0],
+        courseId: getCourseIdFromHash(),
+        allItemCount: allItems.length,
+        chapterCount,
+        courseItemCount: document.querySelectorAll('.hoverItem').length,
+        loadingCount: document.querySelectorAll('.el-loading-mask, .el-skeleton').length,
+        serverError: is500Error(),
+      };
+    }
+
+    static logDirectorySnapshot(stage, snapshot, level = 'debug') {
+      const summary = `route=${snapshot.route || '/'} course=${snapshot.courseId || '?'} ` +
+        `items=${snapshot.allItemCount} chapters=${snapshot.chapterCount} ` +
+        `courseItems=${snapshot.courseItemCount} loading=${snapshot.loadingCount} 500=${snapshot.serverError}`;
+      logger[level](`[CourseDirectory] ${stage}: ${summary}`, snapshot);
+    }
+
+    static isDirectorySnapshotReady(snapshot, requireCourseItems) {
+      if (!isCoursePage() || snapshot.serverError) return false;
+      if (snapshot.allItemCount === 0 || snapshot.chapterCount === 0) return false;
+      return !requireCourseItems || snapshot.courseItemCount > 0;
+    }
+
+    static async waitForStableDirectory({
+      requireCourseItems = false,
+      timeout = CONFIG.COURSE_DIRECTORY_TIMEOUT,
+      stableMs = CONFIG.COURSE_DIRECTORY_STABLE_MS,
+    } = {}) {
+      const startedAt = Date.now();
+      let stableSince = 0;
+      let stableSignature = '';
+      let lastDiagnostic = '';
+      CourseModel.logDirectorySnapshot(requireCourseItems ? 'wait-populated-start' : 'wait-start', CourseModel.getDirectorySnapshot());
+
+      while (Date.now() - startedAt < timeout) {
+        const snapshot = CourseModel.getDirectorySnapshot();
+        const ready = CourseModel.isDirectorySnapshotReady(snapshot, requireCourseItems);
+        const signature = [snapshot.route, snapshot.allItemCount, snapshot.chapterCount,
+          snapshot.courseItemCount, snapshot.loadingCount, snapshot.serverError].join('|');
+
+        if (!ready) {
+          if (signature !== lastDiagnostic) {
+            CourseModel.logDirectorySnapshot(requireCourseItems ? 'waiting-for-course-items' : 'waiting-for-chapters', snapshot);
+            lastDiagnostic = signature;
+          }
+          stableSince = 0;
+          stableSignature = '';
+        } else if (signature !== stableSignature) {
+          stableSignature = signature;
+          stableSince = Date.now();
+          CourseModel.logDirectorySnapshot('candidate-found', snapshot);
+        } else if (Date.now() - stableSince >= stableMs) {
+          CourseModel.logDirectorySnapshot('stable-ready', snapshot, 'success');
+          return snapshot;
+        }
+
+        await sleep(CONFIG.COURSE_DIRECTORY_POLL_INTERVAL);
+      }
+
+      const timeoutSnapshot = CourseModel.getDirectorySnapshot();
+      CourseModel.logDirectorySnapshot(requireCourseItems ? 'wait-populated-timeout' : 'wait-timeout', timeoutSnapshot, 'warn');
+      return null;
+    }
+
     static async expandAllChapters() {
       const allItems = document.querySelectorAll('.el-collapse-item');
       let count = 0;
@@ -140,9 +245,16 @@
     }
 
     static async buildModel() {
+      const initialSnapshot = await CourseModel.waitForStableDirectory();
+      if (!initialSnapshot) return null;
       await CourseModel.expandAllChapters();
-      await sleep(500);
+      const populatedSnapshot = await CourseModel.waitForStableDirectory({ requireCourseItems: true });
+      if (!populatedSnapshot) return null;
       const allItems = document.querySelectorAll('.el-collapse-item');
+      if (allItems.length === 0) {
+        CourseModel.logDirectorySnapshot('empty-after-stable-ready', CourseModel.getDirectorySnapshot(), 'warn');
+        return null;
+      }
       logger.info('DOM中共 ' + allItems.length + ' 个 el-collapse-item');
       const chapters = [];
       var currentChapter = null;
@@ -197,6 +309,11 @@
           }
         }
       }
+      if (chapters.length === 0) {
+        CourseModel.logDirectorySnapshot('no-chapters-after-parse', CourseModel.getDirectorySnapshot(), 'warn');
+        return null;
+      }
+
       var tv = 0, te = 0, dv = 0, de = 0;
       for (var ci = 0; ci < chapters.length; ci++) {
         for (var pj = 0; pj < chapters[ci].pairs.length; pj++) {
@@ -233,11 +350,17 @@
         if (allItems.length > 0 && domIndex < allItems.length) break;
         await sleep(1500);
       }
-      if (domIndex >= allItems.length) {
+      if (!allItems || domIndex >= allItems.length) {
         logger.error('domIndex ' + domIndex + ' 越界(共' + allItems.length + '个)，Vue可能未渲染完成');
         return false;
       }
       var targetItem = allItems[domIndex];
+      var titleEl = targetItem.querySelector('.title span');
+      var actualTitle = titleEl ? titleEl.textContent.trim() : '';
+      if (taskTitle && actualTitle && actualTitle !== taskTitle) {
+        logger.warn('domIndex ' + domIndex + ' 标题不匹配，拒绝误点: "' + actualTitle + '"');
+        return false;
+      }
       if (targetItem.offsetParent === null) {
         var wrap = targetItem.closest('.el-collapse-item__wrap');
         var pItem = wrap ? wrap.closest('.el-collapse-item') : null;
@@ -257,7 +380,7 @@
   }
 // ======================== 视频处理器 ========================
   class VideoHandler {
-    static async waitForCompletion() {
+    static async waitForCompletion(isActive = () => true) {
       logger.info('等待视频播放完成...');
 
       const video = await waitForElement('#xgPlayer video', 10000);
@@ -276,38 +399,121 @@
 
       return new Promise((resolve) => {
         let resolved = false;
+        let endingCountdownStarted = false;
         let nearCompleteTime = 0;
-        
-        const finish = (reason) => {
-          if (resolved) return;
-          resolved = true;
-          logger.success(`视频播放完成 (${reason})`);
-          resolve(true);
+        let lastNearCompleteSeconds = null;
+        let checkTimer = null;
+        let countdownTimer = null;
+        let countdownFinishTimer = null;
+        let timeoutTimer = null;
+        let playerStalled = false;
+        let lastPlaybackTime = Number(video.currentTime);
+        let lastPlaybackAdvanceTime = Date.now();
+
+        const cleanup = () => {
+          if (checkTimer) clearInterval(checkTimer);
+          if (countdownTimer) clearInterval(countdownTimer);
+          if (countdownFinishTimer) clearTimeout(countdownFinishTimer);
+          if (timeoutTimer) clearTimeout(timeoutTimer);
         };
 
-        video.addEventListener('ended', () => finish('ended'), { once: true });
+        const finish = (completed, reason) => {
+          if (resolved) return;
+          resolved = true;
+          cleanup();
+          if (completed) logger.success(`视频播放完成 (${reason})`);
+          else logger.warn(`视频未完成 (${reason})`);
+          resolve(completed);
+        };
 
-        const check = setInterval(() => {
-          if (resolved) { clearInterval(check); return; }
-          
+        const startEndingCountdown = (reason) => {
+          if (resolved || endingCountdownStarted) return;
+          endingCountdownStarted = true;
+          let remaining = Math.ceil(CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000);
+          logger.info(`视频已结束 (${reason})，${remaining} 秒倒计时后继续...`);
+          countdownTimer = setInterval(() => {
+            if (!isActive()) {
+              finish(false, '任务已停止');
+              return;
+            }
+            remaining--;
+            if (remaining > 0) logger.info(`视频完成确认倒计时：${remaining} 秒`);
+          }, 1000);
+          countdownFinishTimer = setTimeout(() => {
+            if (!isActive()) finish(false, '任务已停止');
+            else finish(true, `${reason} + ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000}s`);
+          }, CONFIG.VIDEO_POST_COMPLETE_DELAY);
+        };
+
+        video.addEventListener('ended', () => startEndingCountdown('ended'), { once: true });
+        video.addEventListener('waiting', () => { playerStalled = true; });
+        video.addEventListener('stalled', () => { playerStalled = true; });
+        video.addEventListener('playing', () => { playerStalled = false; });
+        video.addEventListener('timeupdate', () => {
+          const currentTime = Number(video.currentTime);
+          if (Number.isFinite(currentTime)) {
+            lastPlaybackTime = currentTime;
+            lastPlaybackAdvanceTime = Date.now();
+            playerStalled = false;
+          }
+        });
+
+        checkTimer = setInterval(() => {
+          if (resolved) return;
+          if (!isActive()) {
+            finish(false, '任务已停止');
+            return;
+          }
+          if (VideoHandler.needsRefresh()) {
+            finish(false, '播放器已卸载或报错');
+            return;
+          }
+          if (video.ended) {
+            startEndingCountdown('ended attr');
+            return;
+          }
+          if (endingCountdownStarted) return;
+
           const bar = document.querySelector('.xgplayer-progress-played');
           const pct = bar ? parseFloat(bar.style.width) : 0;
-          
-          // >=99% 保底：标记时间，10秒后强制完成
-          if (pct >= 99) {
+          const now = Date.now();
+          const currentTime = Number(video.currentTime);
+          const duration = Number(video.duration);
+          if (Number.isFinite(currentTime) && (!Number.isFinite(lastPlaybackTime) || currentTime > lastPlaybackTime + 0.05)) {
+            lastPlaybackTime = currentTime;
+            lastPlaybackAdvanceTime = now;
+            playerStalled = false;
+          }
+          const atNativeEnd = Number.isFinite(currentTime) && Number.isFinite(duration) && currentTime >= Math.max(0, duration - 1);
+          const playbackRecentlyAdvanced = Number.isFinite(currentTime) &&
+            now - lastPlaybackAdvanceTime <= CONFIG.VIDEO_CHECK_INTERVAL * 2;
+          // 个别播放器不会触发 ended。仅在真正接近时长末尾，或播放时钟仍在推进时兜底；
+          // waiting/stalled 或时钟停滞的 99% 不会被误判为完成。
+          const canUse99Fallback = atNativeEnd || (!video.paused && !playerStalled && playbackRecentlyAdvanced);
+          if (pct >= 99 && canUse99Fallback) {
             if (!nearCompleteTime) {
               nearCompleteTime = Date.now();
-              logger.info(`进度>=99%，等待10秒后强制完成...`);
-            } else if (Date.now() - nearCompleteTime >= 10000) {
-              clearInterval(check);
-              finish('progress >=99% + 10s');
+              lastNearCompleteSeconds = Math.ceil(CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000);
+              logger.info(`进度>=99%，${lastNearCompleteSeconds} 秒倒计时后兜底完成...`);
+            } else {
+              const elapsed = Date.now() - nearCompleteTime;
+              const secondsLeft = Math.max(0, Math.ceil((CONFIG.VIDEO_POST_COMPLETE_DELAY - elapsed) / 1000));
+              if (secondsLeft !== lastNearCompleteSeconds && secondsLeft > 0) {
+                lastNearCompleteSeconds = secondsLeft;
+                logger.info(`视频末尾确认倒计时：${secondsLeft} 秒`);
+              }
+              if (elapsed >= CONFIG.VIDEO_POST_COMPLETE_DELAY) {
+                finish(true, `progress >=99% + ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000}s`);
+              }
             }
+          } else if (nearCompleteTime) {
+            nearCompleteTime = 0;
+            lastNearCompleteSeconds = null;
+            logger.info('99% 进度确认已重置（视频暂停、缓冲、播放时钟停滞或进度回落）');
           }
-          
-          if (video.ended) { clearInterval(check); finish('ended attr'); }
         }, CONFIG.VIDEO_CHECK_INTERVAL);
 
-        setTimeout(() => { clearInterval(check); if (!resolved) { resolved = true; logger.warn('超时(2小时)强制继续'); resolve(true); } }, 2 * 3600 * 1000);
+        timeoutTimer = setTimeout(() => finish(false, '等待超时(2小时)'), 2 * 3600 * 1000);
       });
     }
 
@@ -319,11 +525,6 @@
       return false;
     }
 
-    static refreshPage() {
-      logger.info('执行F5刷新...');
-      window.__ouchn_reloading = true;
-      location.reload();
-    }
   }
 
   // ======================== 考试处理器 ========================
@@ -338,10 +539,11 @@
       return 'in_progress';
     }
 
-    static async waitForPlugin(timeout = 5 * 60 * 1000) {
+    static async waitForPlugin(timeout = 5 * 60 * 1000, shouldContinue = () => true) {
       logger.info('等待爱问答助手完成答题...');
       const start = Date.now();
       while (Date.now() - start < timeout) {
+        if (!shouldContinue()) return false;
         const s = ExamHandler.isPluginDone();
         if (s === 'all_done') return true;
         await sleep(CONFIG.EXAM_CHECK_INTERVAL);
@@ -350,8 +552,14 @@
       return false;
     }
 
-    static async submitExam() {
+    static async submitExam(shouldContinue = () => true) {
       logger.info('===== 交卷流程 =====');
+      const canContinue = () => {
+        if (shouldContinue()) return true;
+        logger.warn('交卷流程已停止');
+        return false;
+      };
+      if (!canContinue()) return false;
 
       // 辅助：按文本找按钮
       const findBtnByText = (text) => {
@@ -367,22 +575,34 @@
       const btn = await waitForElement('.paperBtn', 5000) || findBtnByText('交卷');
       if (btn) { btn.click(); logger.success('已点击交卷'); await sleep(1500); }
       else { logger.error('未找到交卷按钮'); return false; }
+      if (!canContinue()) return false;
 
       // 2. 确认弹窗
       logger.info('[2] 确认弹窗...');
       await sleep(1000);
+      if (!canContinue()) return false;
       const dialogBtns = document.querySelectorAll('.el-message-box__btns button, .el-dialog__footer button, .el-overlay button');
+      let confirmed = false;
       for (const b of dialogBtns) {
-        if (/确认|确定|提交/.test(b.textContent)) { b.click(); logger.success(`点击: "${b.textContent.trim()}"`); break; }
+        if (/确认|确定|提交/.test(b.textContent)) {
+          b.click();
+          confirmed = true;
+          logger.success(`点击: "${b.textContent.trim()}"`);
+          break;
+        }
       }
+      if (!confirmed) { logger.error('未找到交卷确认按钮'); return false; }
       await sleep(2000);
+      if (!canContinue()) return false;
 
       // 3. 查看试卷
       logger.info('[3] 查看试卷...');
       await sleep(1000);
+      if (!canContinue()) return false;
       const viewBtn = await waitForElement('.determine', 5000) || findBtnByText('查看试卷');
       if (viewBtn) { viewBtn.click(); logger.success('已点击查看试卷'); await sleep(1500); }
       else { logger.warn('未找到查看试卷按钮，直接返回'); }
+      if (!canContinue()) return false;
 
       // 4. 返回 — 直接用浏览器回退
       logger.info('[4] 返回课程页...');
@@ -397,9 +617,39 @@
 
   // ======================== 状态管理 ========================
   class StateManager {
-    static save(state) { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(state)); }
+    static save(state) {
+      try {
+        localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(state));
+        return true;
+      } catch (e) {
+        logger.error(`保存断点失败: ${e.message}`);
+        return false;
+      }
+    }
     static load() { try { const r = localStorage.getItem(CONFIG.STORAGE_KEY); return r ? JSON.parse(r) : null; } catch { return null; } }
     static clear() { localStorage.removeItem(CONFIG.STORAGE_KEY); }
+    static hasTaskPointer(state) {
+      return !!state && Number.isInteger(state.chapterIdx) && Number.isInteger(state.pairIdx) &&
+        (state.itemType === 'video' || state.itemType === 'exam');
+    }
+    static hasResumeState(state) {
+      return StateManager.hasTaskPointer(state) ||
+        (!!state && state.stage === 'initializing' && !!state.courseId);
+    }
+    static isResumable(state) {
+      return StateManager.hasResumeState(state) && state.autoResume !== false;
+    }
+    static isSameTask(state, task, courseId) {
+      if (!StateManager.hasTaskPointer(state) || !task) return false;
+      if (!state.courseId || !courseId || String(state.courseId) !== String(courseId)) return false;
+      return state.chapterIdx === task.chapterIdx && state.pairIdx === task.pairIdx && state.itemType === task.itemType;
+    }
+  }
+
+  function shouldAutoResume(state, currentCourseId = getCourseIdFromHash()) {
+    if (!StateManager.isResumable(state)) return false;
+    if (!state.courseId) return false;
+    return !currentCourseId || String(state.courseId) === String(currentCourseId);
   }
 
   // ======================== 主控制器 ========================
@@ -413,21 +663,55 @@
       this.sections = [];
       this.tasks = []; // v2待处理任务
       this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
+      this.courseId = '';
+      this._runId = 0;
+      this._reloadTimer = null;
+      this._loopRunId = 0;
     }
 
     restoreState() {
       const s = StateManager.load();
-      if (s) {
-        this.currentIndex = s.currentIndex || 0;
+      if (StateManager.isResumable(s)) {
         this.stats = s.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
+        this.courseId = s.courseId || this.courseId;
         return true;
       }
       return false;
     }
 
     async start() {
+      if (this.running) {
+        logger.warn('任务已在运行中');
+        return;
+      }
+
+      const savedState = StateManager.load();
+      const currentCourseId = getCourseIdFromHash();
+      const savedMatchesCurrentCourse = shouldAutoResume(savedState, currentCourseId);
+      const isLegacyCheckpoint = StateManager.hasTaskPointer(savedState) && !savedState.courseId;
+      const manuallyRestartingStoppedTask = StateManager.hasResumeState(savedState) &&
+        savedState.autoResume === false &&
+        (!savedState.courseId || !currentCourseId || String(savedState.courseId) === String(currentCourseId));
+      if (isLegacyCheckpoint || manuallyRestartingStoppedTask) {
+        StateManager.clear();
+        logger.info(isLegacyCheckpoint
+          ? '检测到旧版无课程 ID 的断点，已清除以避免串课；本次将重新建立断点'
+          : '手动重新开始，已清除上一次达到上限的重试状态');
+      }
+      if (savedMatchesCurrentCourse) {
+        this.stats = savedState.stats || this.stats;
+        this.courseId = savedState.courseId || currentCourseId || this.courseId;
+      } else {
+        this.courseId = currentCourseId || this.courseId;
+        if (StateManager.isResumable(savedState) && isCoursePage()) {
+          logger.warn(`已保存的是课程 ${savedState.courseId}，当前为 ${currentCourseId}，不会串课恢复`);
+        }
+      }
+
       this.running = true;
       this.paused = false;
+      this._reloading = false;
+      const runId = ++this._runId;
 
       logger.info('========================================');
       logger.info('=== 自动刷课助手 v2 (domIndex定位) ===');
@@ -436,64 +720,86 @@
       // 如果在非课程页，先跳转回课程页
       if (!isCoursePage()) {
         logger.info('不在课程页，导航回课程总览...');
-        window.location.hash = '#/myCourse/study?id=3098';
-        await sleep(3000);
-        if (!isCoursePage()) { logger.error('无法返回课程页'); this.stop(); return; }
+        const targetCourseId = this.courseId || (savedMatchesCurrentCourse ? savedState.courseId : '');
+        if (!targetCourseId) {
+          logger.error('无法确定课程 ID，请回到课程总览页后点击开始');
+          this.running = false;
+          return;
+        }
+        window.location.hash = courseOverviewHash(targetCourseId);
+        const startTime = Date.now();
+        while (!isCoursePage() && Date.now() - startTime < CONFIG.NAVIGATION_TIMEOUT && this._isActiveRun(runId)) {
+          await sleep(500);
+        }
+        if (!isCoursePage()) {
+          logger.error('无法返回课程页，准备刷新恢复');
+          this._requestReload('无法返回课程总览');
+          return;
+        }
       }
 
       // 构建课程模型
-      const model = await CourseModel.buildModel();
-      // v2: model already validated by buildModel()
+      let model;
+      try {
+        model = await CourseModel.buildModel();
+      } catch (e) {
+        logger.error(`课程目录解析异常: ${e.message}`, e.stack);
+      }
+      if (!this._isActiveRun(runId)) return;
+      if (!model) {
+        this.stats.errors++;
+        logger.warn('课程目录未就绪，保留断点并刷新重试');
+        this._requestReload('课程目录未加载');
+        return;
+      }
 
       // 过滤出未完成的
       this.tasks = CourseModel.getPendingTasks(model.chapters);
-      
 
       if (this.tasks.length === 0) {
         logger.success('所有节次已完成');
-        this.stop();
+        this._finishNormally();
         return;
       }
 
       logger.info("待处理: " + this.tasks.length + " 个任务");
 
-            // v2: 从保存的状态恢复进度
-      const savedState = StateManager.load();
-      if (savedState && savedState.chapterIdx !== undefined) {
-        this.currentIndex = 0;
-        for (var si = 0; si < this.tasks.length; si++) {
-          if (this.tasks[si].chapterIdx === savedState.chapterIdx &&
-              this.tasks[si].pairIdx === savedState.pairIdx &&
-              this.tasks[si].itemType === savedState.itemType) {
-            this.currentIndex = si; break;
-          }
-        }
+      // 按稳定的章节/节次/类型三元组恢复；不依赖旧版已废弃的 currentIndex。
+      const savedIndex = savedMatchesCurrentCourse
+        ? this.tasks.findIndex(task => StateManager.isSameTask(savedState, task, this.courseId))
+        : -1;
+      if (savedIndex >= 0) {
+        this.currentIndex = savedIndex;
         logger.info("恢复进度: #" + (this.currentIndex + 1) + " " + this.tasks[this.currentIndex].title);
       } else {
         this.currentIndex = 0;
+        if (savedMatchesCurrentCourse) logger.info('保存的节次已完成或课程目录已变化，从最早待办继续');
         logger.info("定位起始: " + this.tasks[0].title);
       }
 
+      // 同一节的失败次数必须跨“总览页可加载、视频页仍 500”的场景保留；
+      // 真正完成并切换到下一节时，_saveState() 会因任务指针变化自动归零。
       this._saveState();
-      if (!this._loopRunning) {
-        await this._processLoop();
-      } else {
-        logger.warn('start() 调用时 _processLoop 已在运行');
-      }
+      await this._processLoop(runId);
     }
 
     pause() { this.paused = true; logger.info('已暂停'); }
-    resume() { this.paused = false; logger.info('已继续'); if (!this._loopRunning) this._processLoop(); else logger.warn('resume() 时循环已在运行'); }
+    resume() {
+      this.paused = false;
+      this._lastProgressTime = Date.now();
+      logger.info('已继续');
+      if (this.running && (!this._loopRunning || this._loopRunId !== this._runId)) this._processLoop(this._runId);
+    }
 
     stop() {
+      this._runId++;
       this.running = false;
       this.paused = false;
-      this._loopRunning = false;
+      this._reloading = false;
       this._longOperation = false;
-      if (this._watchdogTimer) {
-        clearInterval(this._watchdogTimer);
-        this._watchdogTimer = null;
-      }
+      this._clearWatchdog();
+      if (this._reloadTimer) clearTimeout(this._reloadTimer);
+      this._reloadTimer = null;
       StateManager.clear();
       logger.info('已停止，进度已清除');
     }
@@ -504,25 +810,24 @@
       this._saveState();
     }
 
-    async _processLoop() {
+    async _processLoop(runId) {
       // 防止双进程：如果已有循环在运行则直接返回
-      if (this._loopRunning) {
+      if (this._loopRunning && this._loopRunId === runId) {
         logger.warn('_processLoop 已在运行中，跳过重复调用');
         return;
       }
       this._loopRunning = true;
-      this._reloading = false;
+      this._loopRunId = runId;
       this._startWatchdog();
-      while (this.running && this.currentIndex < this.tasks.length) {
+      while (this._isActiveRun(runId) && this.currentIndex < this.tasks.length) {
         if (this.paused) { await sleep(1000); continue; }
-        if (this._reloading) { await sleep(2000); continue; }
+        if (this._reloading) break;
 
         const task = this.tasks[this.currentIndex];
         if (!task) {
-          logger.error(`索引${this.currentIndex}越界(pending共${this.tasks.length}个)，重置扫描`);
-          this.currentIndex = 0;
-          await sleep(1000);
-          continue;
+          logger.error(`索引${this.currentIndex}越界(pending共${this.tasks.length}个)，刷新后重新解析`);
+          this._requestReload('任务索引异常');
+          break;
         }
         logger.info(`\n--- [${this.currentIndex + 1}/${this.tasks.length}] ${task.title} ---`);
         logger.info(`Type: ${task.itemType} | Chapter: ${task.chapterName}`);
@@ -541,43 +846,59 @@
           }
         }
 
-        let success = false;
+        let outcome = false;
         try {
-          success = await this._navigateAndProcess(task);
+          outcome = await this._navigateAndProcess(task, runId);
+          if (!this._isActiveRun(runId)) break;
           this._longOperation = false;
           this._lastProgressTime = Date.now();
-          if (success) {
+          if (outcome === true) {
             if (task.itemType === 'video') this.stats.videos++;
             else this.stats.exams++;
-          } else {
-            this.stats.errors++;
           }
         } catch (e) {
           this._longOperation = false;
           logger.error(`异常: ${e.message}`, e.stack);
-          this.stats.errors++;
+          outcome = false;
         }
 
-        if (!this._reloading) {
+        if (outcome === 'redirected') {
+          await sleep(500);
+          continue;
+        }
+        if (outcome === true) {
           this.currentIndex++;
           this._saveState();
-        } else {
+        } else if (!this._reloading && !this.paused) {
+          this.stats.errors++;
+          logger.warn(`任务未完成，保留当前节次并刷新重试: ${task.title}`);
+          this._requestReload('任务处理失败');
+        }
+        if (this._reloading) {
           logger.info('等待页面刷新恢复...');
+          break;
         }
         await sleep(2000);
       }
 
-      this.running = false;
+      // 旧循环在 stop() 后可能晚于新循环结束；不能清掉新循环的互斥标记。
+      if (this._loopRunId !== runId) return;
       this._loopRunning = false;
-      StateManager.clear();
-      logger.info('\n========================================');
-      logger.success('全部完成!');
-      logger.info(`视频: ${this.stats.videos} | 考试: ${this.stats.exams} | 错误: ${this.stats.errors}`);
+      this._loopRunId = 0;
+      this._longOperation = false;
+      if (this._reloading) {
+        this.running = false;
+        this._clearWatchdog();
+        return;
+      }
+      if (!this._isActiveRun(runId)) return;
+      if (this.currentIndex < this.tasks.length) return;
+
+      this._finishNormally();
     }
 
-    async _navigateAndProcess(task) {
-      // 视频页/未知页 → 回退到课程页再导航
-      // 考试页 → 不退回，直接处理（submitExam里会回退）
+    async _navigateAndProcess(task, runId) {
+      // 视频页/未知页 → 回退到课程页再导航；考试页则在当前页继续处理。
       if (!isCoursePage() && !isExamPage()) {
         logger.info('回退到课程页...');
         history.back();
@@ -586,106 +907,80 @@
           history.back();
           await sleep(3000);
         }
+        if (!isCoursePage()) return false;
       }
 
-      // 检测页面是否挂了（AxiosError timeout）
-      // 仅在课程页检测，避免视频页残留请求超时误判
+      if (!this._isActiveRun(runId)) return false;
+      // 仅在课程页检测 AxiosError，避免视频页残留请求超时误判。
       if (isCoursePage()) {
         const bodyText = document.body?.innerText || '';
-        const isDead = bodyText.includes('AxiosError') && bodyText.includes('timeout');
-        if (isDead) {
-          logger.warn('检测到 AxiosError timeout，F5刷新...');
-          this._markReload();
-          location.reload();
+        if (bodyText.includes('AxiosError') && bodyText.includes('timeout')) {
+          logger.warn('检测到 AxiosError timeout，准备刷新恢复...');
+          this._requestReload('AxiosError timeout');
           return false;
         }
       }
 
-      // ===== v2 导航：domIndex 直接定位，不再依赖文本匹配 =====
-      var navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
+      const navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
       if (!navOk) {
-        logger.warn('导航失败: [' + task.itemType + '] ' + task.title + ', 跳过');
+        logger.warn('导航失败: [' + task.itemType + '] ' + task.title);
         return false;
       }
       logger.debug(`已触发点击: ${task.title}`);
 
-      await sleep(1000);
-      await sleep(3000);
-
-      // 500 重试
-      for (let retry = 0; retry < CONFIG.MAX_RETRIES; retry++) {
-        if (this.paused) return false;
+      await sleep(4000);
+      for (let attempt = 0; attempt < CONFIG.NAVIGATION_ATTEMPTS; attempt++) {
+        if (!this._isActiveRun(runId) || this.paused) return false;
 
         if (is500Error()) {
-          logger.warn(`500错误，第${retry + 1}次重试...`);
-          await sleep(CONFIG.RETRY_DELAY_BASE * (retry + 1));
-          this._markReload();
-          location.reload();
-          await sleep(3000);
-          continue;
+          logger.warn('检测到 500 服务器错误，准备刷新恢复...');
+          this._requestReload('500 服务器错误');
+          return false;
         }
 
         if (isVideoPage()) {
           this._longOperation = true;
           logger.success('进入视频页面');
-          // 等待播放器加载（最长8秒），不急于判为失败
           const videoEl = await waitForElement('#xgPlayer video', 8000);
           if (!videoEl) {
-            // 8秒后仍无视频元素，检查是否有明确错误
-            const err = document.querySelector('.xgplayer-error');
-            if (err && getComputedStyle(err).display !== 'none') {
-              logger.info('视频播放器加载失败(有错误提示)，执行F5刷新...');
-              this._markReload();
-              VideoHandler.refreshPage();
-              return false;
-            }
-            // 无错误但无视频，可能是页面未完全加载，也刷新一次
-            logger.warn('视频播放器8秒未加载，执行F5刷新...');
-            this._markReload();
-            VideoHandler.refreshPage();
+            logger.warn('视频播放器未加载');
             return false;
           }
-          return await VideoHandler.waitForCompletion();
+          return VideoHandler.waitForCompletion(() =>
+            this._isActiveRun(runId) && !this.paused && videoEl.isConnected !== false && !is500Error()
+          );
         }
 
         if (isExamPage()) {
           this._longOperation = true;
           logger.success('进入考试页面');
-          if (is500Error()) {
-            this._markReload();
-            location.reload();
-            return false;
-          }
-          const done = await ExamHandler.waitForPlugin();
+          const done = await ExamHandler.waitForPlugin(5 * 60 * 1000, () =>
+            this._isActiveRun(runId) && !this.paused && !!document.querySelector('.examQuestion') && !is500Error()
+          );
           if (!done) {
-            logger.warn('答题插件超时，回退课程页...');
-            history.back();
-            await sleep(3000);
+            logger.warn('答题插件未完成或已暂停');
             return false;
           }
           await sleep(2000);
-          return await ExamHandler.submitExam();
+          if (!this._isActiveRun(runId) || this.paused) return false;
+          return ExamHandler.submitExam(() => this._isActiveRun(runId) && !this.paused);
         }
 
         if (isCoursePage()) {
-          // 检测平台顺序提示："请先完成 X.X"
           const hint = detectOrderHint();
           if (hint) {
             logger.warn(`平台提示应先完成: "${hint}"`);
-            // v2: 在 tasks 中查找匹配的节次，按 domIndex 重导航
-            const match = this.tasks.find(t => hint.includes(t.title) || t.title.includes(hint));
-            if (match) {
-              logger.info(`纠错: 按平台提示导航到 "${match.title}" [domIndex:${match.domIndex}]`);
-              await CourseModel.navigateToDomIndex(match.domIndex, match.title, match.itemType);
-              await sleep(3000);
-              continue;
+            const matchIndex = this.tasks.findIndex(t => hint.includes(t.title) || t.title.includes(hint));
+            if (matchIndex >= 0 && matchIndex !== this.currentIndex) {
+              this.currentIndex = matchIndex;
+              this._saveState({ retryCount: 0, retryAt: null, lastReloadReason: '' });
+              logger.info(`纠错: 下一个处理 "${this.tasks[matchIndex].title}"`);
+              return 'redirected';
             }
-            logger.warn(`提示节次 "${hint}" 未在待处理列表中匹配到`);
+            if (matchIndex < 0) logger.warn(`提示节次 "${hint}" 未在待处理列表中匹配到`);
           }
-          logger.debug('仍在课程页，等待跳转...');
-          // 可能是点击没生效，重试点击
-          if (retry === 2) {
-            CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
+          if (attempt === 2) {
+            await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
             logger.debug('重新触发点击...');
           }
           await sleep(2000);
@@ -695,27 +990,31 @@
         await sleep(1000);
       }
 
-      logger.error('页面跳转超时，F5刷新重试...');
-      this._markReload();
-      location.reload();
+      logger.error('页面跳转超时');
       return false;
     }
 
-
-    // 看门狗：超过120秒无进展则强制F5恢复
+    // 看门狗：超过120秒无进展则持久化断点后再刷新。
     _startWatchdog() {
-      if (this._watchdogTimer) clearInterval(this._watchdogTimer);
+      this._clearWatchdog();
       this._lastProgressTime = Date.now();
       this._watchdogTimer = setInterval(() => {
-        if (!this.running || this.paused || this._reloading) return;
-        if (this._longOperation) return;  // 视频播放/考试等待中，豁免
+        if (!this.running || this.paused || this._reloading || this._longOperation) return;
         const elapsed = Date.now() - this._lastProgressTime;
         if (elapsed > 120000) {
-          logger.warn(`[看门狗] ${Math.floor(elapsed / 1000)}秒无进展，强制F5恢复...`);
-          this._markReload();
-          location.reload();
+          logger.warn(`[看门狗] ${Math.floor(elapsed / 1000)}秒无进展，准备刷新恢复...`);
+          this._requestReload('看门狗无进展');
         }
       }, 30000);
+    }
+
+    _clearWatchdog() {
+      if (this._watchdogTimer) clearInterval(this._watchdogTimer);
+      this._watchdogTimer = null;
+    }
+
+    _isActiveRun(runId) {
+      return this.running && this._runId === runId;
     }
 
     _currentTitle() {
@@ -723,26 +1022,114 @@
       return '未知';
     }
 
-    _saveState() {
-      if (this.currentIndex < this.tasks.length) {
-        const task = this.tasks[this.currentIndex];
-        StateManager.save({
-          chapterIdx: task.chapterIdx,
-          pairIdx: task.pairIdx,
-          itemType: task.itemType,
-          title: task.title,
-          totalTasks: this.tasks.length,
-          stats: this.stats,
+    _buildState(overrides = {}) {
+      const previous = StateManager.load();
+      const task = this.tasks[this.currentIndex];
+      if (!task) {
+        if (StateManager.hasResumeState(previous)) {
+          return {
+            ...previous,
+            stats: { ...this.stats },
+            timestamp: Date.now(),
+            ...overrides,
+          };
+        }
+        const courseId = this.courseId || getCourseIdFromHash();
+        if (!courseId) return null;
+        // 首次解析课程目录前也要有可恢复状态，否则此时遇到 500 会无断点可用。
+        return {
+          version: 3,
+          stage: 'initializing',
+          courseId,
+          stats: { ...this.stats },
+          retryCount: 0,
+          retryAt: null,
+          lastReloadReason: '',
+          autoResume: true,
           timestamp: Date.now(),
-        });
+          ...overrides,
+        };
       }
+
+      const courseId = this.courseId || getCourseIdFromHash() || previous?.courseId || '';
+      const sameTask = StateManager.isSameTask(previous, task, courseId);
+      const retryCount = Object.prototype.hasOwnProperty.call(overrides, 'retryCount')
+        ? overrides.retryCount
+        : sameTask ? Number(previous.retryCount) || 0 : 0;
+      const retryAt = Object.prototype.hasOwnProperty.call(overrides, 'retryAt')
+        ? overrides.retryAt
+        : sameTask ? previous.retryAt || null : null;
+      const lastReloadReason = Object.prototype.hasOwnProperty.call(overrides, 'lastReloadReason')
+        ? overrides.lastReloadReason
+        : sameTask ? previous.lastReloadReason || '' : '';
+
+      return {
+        version: 3,
+        courseId,
+        chapterIdx: task.chapterIdx,
+        pairIdx: task.pairIdx,
+        itemType: task.itemType,
+        title: task.title,
+        totalTasks: this.tasks.length,
+        stats: { ...this.stats },
+        retryCount,
+        retryAt,
+        lastReloadReason,
+        autoResume: Object.prototype.hasOwnProperty.call(overrides, 'autoResume') ? overrides.autoResume : true,
+        timestamp: Date.now(),
+        ...overrides,
+      };
     }
 
-_markReload() {
-      if (this._reloading) return;
+    _saveState(overrides = {}) {
+      const state = this._buildState(overrides);
+      if (state) StateManager.save(state);
+      return state;
+    }
+
+    _requestReload(reason) {
+      if (this._reloading) return true;
+      const state = this._buildState();
+      if (!StateManager.hasResumeState(state)) {
+        logger.error('无法确定课程或断点，已停止以避免盲目刷新');
+        this.running = false;
+        return false;
+      }
+
+      const retryCount = (Number(state.retryCount) || 0) + 1;
+      const delay = Math.min(
+        CONFIG.RETRY_DELAY_BASE * Math.pow(2, Math.min(retryCount - 1, 10)),
+        CONFIG.RETRY_DELAY_MAX,
+      );
+      StateManager.save({
+        ...state,
+        retryCount,
+        retryAt: Date.now() + delay,
+        lastReloadReason: reason,
+        autoResume: true,
+        timestamp: Date.now(),
+      });
       this._reloading = true;
-      this._saveState();
-      window.__ouchn_reloading = true;
+      this._longOperation = false;
+      this._clearWatchdog();
+      logger.warn(`${reason}，${Math.ceil(delay / 1000)} 秒后刷新（连续第 ${retryCount} 次）...`);
+      this._reloadTimer = setTimeout(() => {
+        if (this._reloading) location.reload();
+      }, delay);
+      return true;
+    }
+
+    _finishNormally() {
+      this.running = false;
+      this.paused = false;
+      this._loopRunning = false;
+      this._loopRunId = 0;
+      this._longOperation = false;
+      this._clearWatchdog();
+      StateManager.clear();
+      logger.info('\n========================================');
+      logger.success('全部完成!');
+      logger.info(`视频: ${this.stats.videos} | 考试: ${this.stats.exams} | 错误: ${this.stats.errors}`);
     }
   }
 
@@ -882,18 +1269,25 @@ _markReload() {
     async _checkUpdate() {
       logger.info('检查更新中...');
       try {
-        const resp = await fetch('https://raw.githubusercontent.com/MochizikuNanoka/ouchn-auto-study/master/%E5%9B%BD%E5%BC%80%E5%AD%A6%E4%B9%A0%E5%B9%B3%E5%8F%B0-%E8%87%AA%E5%8A%A8%E5%88%B7%E8%AF%BE%E5%8A%A9%E6%89%8B.user.js?t=' + Date.now());
-        if (!resp.ok) { logger.warn('无法获取远端版本'); return; }
-        const text = await resp.text();
-        const m = text.match(/@version\s+([\d.]+)/);
-        if (!m) { logger.warn('未找到远端版本号'); return; }
-        const remoteVer = m[1];
-        const localVer = '2.0.1';
-        if (remoteVer !== localVer) {
-          logger.success(`发现新版本 v${remoteVer}（当前 v${localVer}），正在打开下载页...`);
-          window.open('https://github.com/MochizikuNanoka/ouchn-auto-study/releases', '_blank');
+        const resp = await fetch(CONFIG.RELEASE_API_URL, {
+          cache: 'no-store',
+          headers: { Accept: 'application/vnd.github+json' },
+        });
+        if (!resp.ok) { logger.warn(`无法获取最新 Release（HTTP ${resp.status}）`); return; }
+        const release = await resp.json();
+        const remoteTag = release.tag_name || release.name;
+        const comparison = compareVersions(remoteTag, CONFIG.VERSION);
+        if (comparison === null) {
+          logger.warn(`最新 Release 标签无法识别: "${remoteTag || '?'}"`);
+          return;
+        }
+        if (comparison > 0) {
+          logger.success(`发现新 Release ${remoteTag}（当前 v${CONFIG.VERSION}），正在打开发布页...`);
+          window.open(release.html_url || 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest', '_blank');
+        } else if (comparison === 0) {
+          logger.info(`已是最新已发布版本 v${CONFIG.VERSION}`);
         } else {
-          logger.info(`已是最新 v${localVer}`);
+          logger.info(`当前开发版本 v${CONFIG.VERSION} 高于最新 Release ${remoteTag}`);
         }
       } catch (e) {
         logger.warn(`检查更新失败: ${e.message}`);
@@ -926,83 +1320,24 @@ _markReload() {
     logger.info('自动刷课助手 v2 初始化');
     logger.info(`页面: ${window.location.hash || '/'}`);
 
-    const wasReloading = !!window.__ouchn_reloading;
-    if (wasReloading) {
-      logger.info('检测到刷新恢复标记');
-      window.__ouchn_reloading = false;
-    }
-
     const ap = new AutoPlayer();
     new ControlPanel(ap);
 
-    // F5 恢复
-    if (wasReloading) {
-      const saved = StateManager.load();
-      if (saved && saved.currentIndex > 0) {
-        ap.currentIndex = saved.currentIndex || 0;
-        ap.stats = saved.stats || { videos: 0, exams: 0, errors: 0, skipped: 0 };
-        ap._lastProgressTime = Date.now();
-
-        if (isVideoPage()) {
-          logger.info(`恢复视频处理: "${saved.currentTitle || '?'}"`);
-          ap.running = true;
-          ap._longOperation = true;
-          ap._startWatchdog();
-          VideoHandler.waitForCompletion().then(async () => {
-            ap._lastProgressTime = Date.now();
-            ap.currentIndex++;
-            ap.stats.videos++;
-            ap._saveState();
-            history.back();
-            await sleep(3000);
-            ap._reloading = true;
-            await ap.start();
-          }).catch(e => {
-            logger.error('视频恢复异常: ' + e.message, e.stack);
-            ap._reloading = true;
-            ap.start();
-          });
-        } else if (isExamPage()) {
-          logger.info(`恢复考试处理: "${saved.currentTitle || '?'}"`);
-          ap.running = true;
-          ap._longOperation = true;
-          ap._startWatchdog();
-          ExamHandler.waitForPlugin().then(async done => {
-            if (done) {
-              await ExamHandler.submitExam();
-              ap._lastProgressTime = Date.now();
-              ap.currentIndex++;
-              ap.stats.exams++;
-              ap._saveState();
-              await sleep(2000);
-              if (!isCoursePage()) history.back();
-              await sleep(3000);
-            }
-            ap._reloading = true;
-            await ap.start();
-          }).catch(e => {
-            logger.error('考试恢复异常: ' + e.message, e.stack);
-            ap._reloading = true;
-            ap.start();
-          });
-        } else if (isCoursePage()) {
-          logger.info('课程页已恢复，重新解析并继续...');
-          ap._reloading = true;
-          await sleep(1500);
-          const model = await CourseModel.buildModel();
-          ap.tasks = CourseModel.getPendingTasks(model.chapters);
-          
-          if (ap.tasks.length === 0) {
-            logger.success('所有节次已完成');
-            StateManager.clear();
-            return;
-          }
-          logger.info(`待处理: ${ap.tasks.length} 个节次`);
-          ap.running = true;
-          ap._startWatchdog();
-          await ap.start();
-        }
+    // 断点保存在 localStorage，F5 会重建 window，不能再依赖页面内存标记。
+    const saved = StateManager.load();
+    const currentCourseId = getCourseIdFromHash();
+    if (shouldAutoResume(saved, currentCourseId)) {
+      const retryAt = Number(saved.retryAt);
+      const waitMs = Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
+      logger.info(`检测到断点，自动恢复: "${saved.title || '?'}"`);
+      if (waitMs > 0) {
+        logger.info(`按重试退避等待 ${Math.ceil(waitMs / 1000)} 秒...`);
+        await sleep(waitMs);
       }
+      // 等待期间用户可能已点击停止或切换课程，重新确认断点仍适用。
+      if (shouldAutoResume(StateManager.load(), getCourseIdFromHash())) await ap.start();
+    } else if (StateManager.isResumable(saved) && isCoursePage()) {
+      logger.warn(`发现其他课程的断点（${saved.courseId}），当前课程不会自动续跑`);
     }
 
     logger.success('初始化完成');
