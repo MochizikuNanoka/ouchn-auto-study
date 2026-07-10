@@ -1,4 +1,4 @@
-# v2.0.4 Technical Specification
+# v2.0.5 Technical Specification
 
 ## Directory Diagnostics
 
@@ -12,6 +12,19 @@
 - Preserve visible `.el-message--error` checks for platform error toasts.
 - Expand only chapter-level collapse items during model construction; opening every task row would add avoidable delay.
 - When navigating to a target task, expand each collapsed ancestor collapse item from outermost to innermost before dispatching the task click.
+
+## Cache Reset and Fresh Directory Scans
+
+- Add a control-panel reset action that removes only assistant keys with the `ouchn_autoplay_` prefix from local and session storage. It must never call `localStorage.clear()` or clear platform authentication state.
+- The reset action stops the current controller, clears its in-memory task model, then reloads the course-overview route with a unique scan token.
+- `_requestReload()` must persist only the current task pointer, statistics, retry metadata, and a fresh directory-scan token. It must route to `#/myCourse/study` with that token before reloading.
+- On recovery, discard all in-memory task arrays, require the matching scan token in the route, wait for stable DOM, then build a new model before matching the saved task pointer.
+- Keep the scan token out of the next ordinary checkpoint after a successful model rebuild so normal task progression remains compact.
+
+## Chinese User-Facing Copy
+
+- Use Chinese for comments, README prose, panel labels, and log messages.
+- Keep standard log-level tags (`[INFO]`, `[WARN]`, `[ERROR]`, `[SUCCESS]`, `[DEBUG]`) and code/selector identifiers unchanged where they are machine-facing.
 
 ## Retry Policy
 

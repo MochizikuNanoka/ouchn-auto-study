@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.4
-// @description  国开学习平台(电大中专)自动刷课助手 — 自动播放视频 + 配合爱问答助手自动交卷，支持可靠断点续传，v2 domIndex 稳定定位消除漂移
+// @version      2.0.5
+// @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
 // @grant        none
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.4',
+    VERSION: '2.0.5',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     NAVIGATION_TIMEOUT: 15000,
@@ -26,6 +26,8 @@
     NAVIGATION_ATTEMPTS: 5,
     RELEASE_API_URL: 'https://api.github.com/repos/MochizikuNanoka/ouchn-auto-study/releases/latest',
     VIDEO_POST_COMPLETE_DELAY: 10000,
+    DIRECTORY_SCAN_QUERY: '_apScan',
+    CACHE_RESET_RELOAD_DELAY: 300,
     STORAGE_KEY: 'ouchn_autoplay_v2',
   };
 
@@ -44,7 +46,7 @@
       const entry = { ts, level, msg, data: data || '', line };
       this.logs.push(entry);
       if (this.logs.length > this.maxLogs) this.logs.shift();
-      const consoleMsg = `[AutoStudy] ${line}`;
+      const consoleMsg = `[自动刷课助手] ${line}`;
       (level === 'ERROR' ? console.error : level === 'WARN' ? console.warn : console.log)(consoleMsg, data || '');
       this.onLogCallbacks.forEach(cb => cb(entry));
     }
@@ -101,15 +103,30 @@
     });
   }
 
-  function getCourseIdFromHash(hash = window.location.hash) {
+  function getHashParams(hash = window.location.hash) {
     const queryIndex = hash.indexOf('?');
-    if (queryIndex < 0) return '';
-    const params = new URLSearchParams(hash.slice(queryIndex + 1));
+    return new URLSearchParams(queryIndex < 0 ? '' : hash.slice(queryIndex + 1));
+  }
+
+  function getCourseIdFromHash(hash = window.location.hash) {
+    const params = getHashParams(hash);
     return params.get('courseId') || params.get('id') || '';
   }
 
-  function courseOverviewHash(courseId) {
-    return courseId ? `#/myCourse/study?id=${encodeURIComponent(courseId)}` : '#/myCourse/study';
+  function getDirectoryScanId(hash = window.location.hash) {
+    return getHashParams(hash).get(CONFIG.DIRECTORY_SCAN_QUERY) || '';
+  }
+
+  function createDirectoryScanId() {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function courseOverviewHash(courseId, scanId = '') {
+    const params = new URLSearchParams();
+    if (courseId) params.set('id', courseId);
+    if (scanId) params.set(CONFIG.DIRECTORY_SCAN_QUERY, scanId);
+    const query = params.toString();
+    return `#/myCourse/study${query ? `?${query}` : ''}`;
   }
 
   function compareVersions(left, right) {
@@ -141,7 +158,7 @@
 
   // 检测平台弹窗提示"请先完成X.X"，提取应先完成的节次标题
   function detectOrderHint() {
-    // 可能的弹窗选择器：el-message-box, el-dialog, el-notification, el-alert
+    // 可能的弹窗选择器：.el-message-box、.el-dialog、.el-notification、.el-alert。
     const dialogEls = document.querySelectorAll('.el-message-box, .el-dialog, .el-notification, .el-alert, .el-message');
     for (const el of dialogEls) {
       const text = el.textContent || '';
@@ -164,8 +181,8 @@
     return null;
   }
 
-  // ======================== 课程解析器（重写版 — 基于课程总览页） ========================
-    // =========  // =============== 课程模型（v2：基于 bodyText + domIndex 稳定定位） ========================
+  // ======================== 课程目录解析器（基于课程总览页） ========================
+  // ======================== 课程模型（基于页面文本与 DOM 索引稳定定位） ========================
   class CourseModel {
 
     static getDirectorySnapshot() {
@@ -173,7 +190,7 @@
       const headers = document.querySelectorAll('.el-collapse-item__header');
       const chapterCount = [...headers].filter(header => !!header.querySelector('.chapter_name')).length;
       return {
-        route: window.location.hash.split('?')[0],
+        route: window.location.hash,
         courseId: getCourseIdFromHash(),
         allItemCount: allItems.length,
         chapterCount,
@@ -184,10 +201,22 @@
     }
 
     static logDirectorySnapshot(stage, snapshot, level = 'debug') {
-      const summary = `route=${snapshot.route || '/'} course=${snapshot.courseId || '?'} ` +
-        `items=${snapshot.allItemCount} chapters=${snapshot.chapterCount} ` +
-        `courseItems=${snapshot.courseItemCount} loading=${snapshot.loadingCount} 500=${snapshot.serverError}`;
-      logger[level](`[CourseDirectory] ${stage}: ${summary}`, snapshot);
+      const stageNames = {
+        'wait-start': '开始等待目录',
+        'wait-populated-start': '开始等待课程项',
+        'waiting-for-chapters': '等待章节加载',
+        'waiting-for-course-items': '等待课程项加载',
+        'candidate-found': '发现候选目录',
+        'stable-ready': '目录稳定可用',
+        'wait-timeout': '等待目录超时',
+        'wait-populated-timeout': '等待课程项超时',
+        'empty-after-stable-ready': '稳定后目录为空',
+        'no-chapters-after-parse': '解析后未找到章节',
+      };
+      const summary = `路由=${snapshot.route || '/'} 课程=${snapshot.courseId || '?'} ` +
+        `折叠项=${snapshot.allItemCount} 章节=${snapshot.chapterCount} ` +
+        `课程项=${snapshot.courseItemCount} 加载层=${snapshot.loadingCount} 服务器错误=${snapshot.serverError ? '是' : '否'}`;
+      logger[level](`[课程目录] ${stageNames[stage] || '目录状态'}：${summary}`, snapshot);
     }
 
     static isDirectorySnapshotReady(snapshot, requireCourseItems) {
@@ -252,18 +281,31 @@
       logger.debug('展开章节: ' + count);
     }
 
-    static async buildModel() {
+    static async buildModel({ scanId = '' } = {}) {
+      if (scanId && getDirectoryScanId() !== scanId) {
+        logger.warn('目录扫描标识不匹配，拒绝使用当前页面目录');
+        return null;
+      }
+      if (scanId) logger.info('正在重新扫描课程目录，不使用刷新前的目录数据');
       const initialSnapshot = await CourseModel.waitForStableDirectory();
       if (!initialSnapshot) return null;
+      if (scanId && getDirectoryScanId() !== scanId) {
+        logger.warn('目录扫描期间页面已变化，放弃当前目录');
+        return null;
+      }
       await CourseModel.expandAllChapters();
       const populatedSnapshot = await CourseModel.waitForStableDirectory({ requireCourseItems: true });
       if (!populatedSnapshot) return null;
+      if (scanId && getDirectoryScanId() !== scanId) {
+        logger.warn('目录扫描期间页面已变化，放弃当前目录');
+        return null;
+      }
       const allItems = document.querySelectorAll('.el-collapse-item');
       if (allItems.length === 0) {
         CourseModel.logDirectorySnapshot('empty-after-stable-ready', CourseModel.getDirectorySnapshot(), 'warn');
         return null;
       }
-      logger.info('DOM中共 ' + allItems.length + ' 个 el-collapse-item');
+      logger.info('课程目录中共有 ' + allItems.length + ' 个折叠项');
       const chapters = [];
       var currentChapter = null;
       for (var i = 0; i < allItems.length; i++) {
@@ -329,7 +371,7 @@
           if (chapters[ci].pairs[pj].exam) { te++; if (chapters[ci].pairs[pj].exam.isComplete) de++; }
         }
       }
-      logger.info('课程模型: ' + chapters.length + ' 个章节, ' + tv + ' 视频, ' + te + ' 考试 (' + dv + '/' + de + ' 完成)');
+      logger.info('课程模型：' + chapters.length + ' 个章节，' + tv + ' 个视频，' + te + ' 个考试（' + dv + '/' + de + ' 已完成）');
       return { chapters: chapters };
     }
 
@@ -370,7 +412,7 @@
     }
 
     static async navigateToDomIndex(domIndex, taskTitle, taskType) {
-      // 从考试页/视频页回退后 Vue 可能还没渲染完 DOM，等待重试
+      // 从考试页或视频页回退后，Vue 可能尚未完成渲染，需要等待后重试。
       var allItems;
       for (let retry = 0; retry < 5; retry++) {
         allItems = document.querySelectorAll('.el-collapse-item');
@@ -378,28 +420,28 @@
         await sleep(1500);
       }
       if (!allItems || domIndex >= allItems.length) {
-        logger.error('domIndex ' + domIndex + ' 越界(共' + allItems.length + '个)，Vue可能未渲染完成');
+        logger.error('目录索引 ' + domIndex + ' 越界（当前共 ' + allItems.length + ' 项），页面可能尚未渲染完成');
         return false;
       }
       var targetItem = allItems[domIndex];
       var titleEl = targetItem.querySelector('.title span');
       var actualTitle = titleEl ? titleEl.textContent.trim() : '';
       if (taskTitle && actualTitle && actualTitle !== taskTitle) {
-        logger.warn('domIndex ' + domIndex + ' 标题不匹配，拒绝误点: "' + actualTitle + '"');
+        logger.warn('目录索引 ' + domIndex + ' 标题不匹配，拒绝误点："' + actualTitle + '"');
         return false;
       }
       const openedAncestors = await CourseModel.expandCollapsedAncestors(targetItem);
-      if (openedAncestors > 0) logger.debug('按需展开父级目录: ' + openedAncestors);
+      if (openedAncestors > 0) logger.debug('按需展开父级目录：' + openedAncestors);
       targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(400);
       var ct = targetItem.querySelector('.section') || targetItem.querySelector('.content_main') || targetItem.querySelector('.el-collapse-item__header');
-      if (!ct) { logger.error('domIndex ' + domIndex + ': 找不到可点击元素'); return false; }
+      if (!ct) { logger.error('目录索引 ' + domIndex + '：找不到可点击元素'); return false; }
       ct.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      logger.info('导航: [' + domIndex + '][' + taskType + '] ' + taskTitle);
+      logger.info('导航：[' + domIndex + '][' + getTaskTypeLabel(taskType) + '] ' + taskTitle);
       return true;
     }
   }
-// ======================== 视频处理器 ========================
+  // ======================== 视频处理器 ========================
   class VideoHandler {
     static async waitForCompletion(isActive = () => true) {
       logger.info('等待视频播放完成...');
@@ -442,8 +484,8 @@
           if (resolved) return;
           resolved = true;
           cleanup();
-          if (completed) logger.success(`视频播放完成 (${reason})`);
-          else logger.warn(`视频未完成 (${reason})`);
+          if (completed) logger.success(`视频播放完成（${reason}）`);
+          else logger.warn(`视频未完成（${reason}）`);
           resolve(completed);
         };
 
@@ -451,7 +493,7 @@
           if (resolved || endingCountdownStarted) return;
           endingCountdownStarted = true;
           let remaining = Math.ceil(CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000);
-          logger.info(`视频已结束 (${reason})，${remaining} 秒倒计时后继续...`);
+          logger.info(`视频已结束（${reason}），${remaining} 秒倒计时后继续...`);
           countdownTimer = setInterval(() => {
             if (!isActive()) {
               finish(false, '任务已停止');
@@ -462,11 +504,11 @@
           }, 1000);
           countdownFinishTimer = setTimeout(() => {
             if (!isActive()) finish(false, '任务已停止');
-            else finish(true, `${reason} + ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000}s`);
+            else finish(true, `${reason}后等待 ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000} 秒`);
           }, CONFIG.VIDEO_POST_COMPLETE_DELAY);
         };
 
-        video.addEventListener('ended', () => startEndingCountdown('ended'), { once: true });
+        video.addEventListener('ended', () => startEndingCountdown('收到视频结束事件'), { once: true });
         video.addEventListener('waiting', () => { playerStalled = true; });
         video.addEventListener('stalled', () => { playerStalled = true; });
         video.addEventListener('playing', () => { playerStalled = false; });
@@ -490,7 +532,7 @@
             return;
           }
           if (video.ended) {
-            startEndingCountdown('ended attr');
+            startEndingCountdown('检测到视频已结束');
             return;
           }
           if (endingCountdownStarted) return;
@@ -508,8 +550,8 @@
           const atNativeEnd = Number.isFinite(currentTime) && Number.isFinite(duration) && currentTime >= Math.max(0, duration - 1);
           const playbackRecentlyAdvanced = Number.isFinite(currentTime) &&
             now - lastPlaybackAdvanceTime <= CONFIG.VIDEO_CHECK_INTERVAL * 2;
-          // 个别播放器不会触发 ended。仅在真正接近时长末尾，或播放时钟仍在推进时兜底；
-          // waiting/stalled 或时钟停滞的 99% 不会被误判为完成。
+          // 个别播放器不会触发“播放结束”事件（ended）。仅在真正接近时长末尾，或播放时钟仍在推进时兜底。
+          // 处于等待、卡顿或播放时钟停滞的 99% 不会被误判为完成。
           const canUse99Fallback = atNativeEnd || (!video.paused && !playerStalled && playbackRecentlyAdvanced);
           if (pct >= 99 && canUse99Fallback) {
             if (!nearCompleteTime) {
@@ -524,7 +566,7 @@
                 logger.info(`视频末尾确认倒计时：${secondsLeft} 秒`);
               }
               if (elapsed >= CONFIG.VIDEO_POST_COMPLETE_DELAY) {
-                finish(true, `progress >=99% + ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000}s`);
+                finish(true, `进度达到 99% 并等待 ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000} 秒`);
               }
             }
           } else if (nearCompleteTime) {
@@ -649,6 +691,29 @@
     }
     static load() { try { const r = localStorage.getItem(CONFIG.STORAGE_KEY); return r ? JSON.parse(r) : null; } catch { return null; } }
     static clear() { localStorage.removeItem(CONFIG.STORAGE_KEY); }
+    static clearCache() {
+      const clearStorage = storage => {
+        if (!storage) return 0;
+        const keys = new Set([CONFIG.STORAGE_KEY]);
+        const length = Number(storage.length) || 0;
+        for (let index = 0; index < length; index++) {
+          const key = storage.key?.(index);
+          if (key === CONFIG.STORAGE_KEY || key?.startsWith('ouchn_autoplay_')) keys.add(key);
+        }
+
+        let cleared = 0;
+        for (const key of keys) {
+          if (storage.getItem(key) === null) continue;
+          storage.removeItem(key);
+          cleared++;
+        }
+        return cleared;
+      };
+
+      let cleared = clearStorage(localStorage);
+      if (typeof sessionStorage !== 'undefined') cleared += clearStorage(sessionStorage);
+      return cleared;
+    }
     static hasTaskPointer(state) {
       return !!state && Number.isInteger(state.chapterIdx) && Number.isInteger(state.pairIdx) &&
         (state.itemType === 'video' || state.itemType === 'exam');
@@ -673,6 +738,12 @@
     return !currentCourseId || String(state.courseId) === String(currentCourseId);
   }
 
+  function getTaskTypeLabel(type) {
+    if (type === 'video') return '视频';
+    if (type === 'exam') return '考试';
+    return '未知类型';
+  }
+
   // ======================== 主控制器 ========================
   class AutoPlayer {
     constructor() {
@@ -682,7 +753,7 @@
       this._loopRunning = false;
       this.currentIndex = 0;
       this.sections = [];
-      this.tasks = []; // v2待处理任务
+      this.tasks = []; // 待处理任务列表
       this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
       this.courseId = '';
       this._runId = 0;
@@ -709,6 +780,7 @@
       const savedState = StateManager.load();
       const currentCourseId = getCourseIdFromHash();
       const savedMatchesCurrentCourse = shouldAutoResume(savedState, currentCourseId);
+      const forceFreshDirectory = savedMatchesCurrentCourse && savedState.forceFreshDirectory === true && !!savedState.directoryScanId;
       const isLegacyCheckpoint = StateManager.hasTaskPointer(savedState) && !savedState.courseId;
       const manuallyRestartingStoppedTask = StateManager.hasResumeState(savedState) &&
         savedState.autoResume === false &&
@@ -717,7 +789,7 @@
         StateManager.clear();
         logger.info(isLegacyCheckpoint
           ? '检测到旧版无课程 ID 的断点，已清除以避免串课；本次将重新建立断点'
-          : '手动重新开始，已清除上一次达到上限的重试状态');
+          : '手动重新开始，已清除上一次停止任务的状态');
       }
       if (savedMatchesCurrentCourse) {
         this.stats = savedState.stats || this.stats;
@@ -734,20 +806,28 @@
       this._reloading = false;
       const runId = ++this._runId;
 
+      if (forceFreshDirectory) {
+        this.tasks = [];
+        this.sections = [];
+        this.currentIndex = 0;
+        logger.info('自动刷新恢复：已丢弃旧目录，等待重新扫描');
+      }
+
       logger.info('========================================');
-      logger.info('=== 自动刷课助手 v2 (domIndex定位) ===');
+      logger.info('=== 自动刷课助手 v2（DOM 索引定位）===');
       logger.info('========================================');
 
-      // 如果在非课程页，先跳转回课程页
-      if (!isCoursePage()) {
-        logger.info('不在课程页，导航回课程总览...');
+      // 不在课程页或目录扫描标识不匹配时，先跳转到全新的课程总览页。
+      const needsCourseOverview = !isCoursePage() || (forceFreshDirectory && getDirectoryScanId() !== savedState.directoryScanId);
+      if (needsCourseOverview) {
+        logger.info(forceFreshDirectory ? '进入新的课程总览页，准备重新扫描目录...' : '不在课程页，导航回课程总览...');
         const targetCourseId = this.courseId || (savedMatchesCurrentCourse ? savedState.courseId : '');
         if (!targetCourseId) {
           logger.error('无法确定课程 ID，请回到课程总览页后点击开始');
           this.running = false;
           return;
         }
-        window.location.hash = courseOverviewHash(targetCourseId);
+        window.location.hash = courseOverviewHash(targetCourseId, forceFreshDirectory ? savedState.directoryScanId : '');
         const startTime = Date.now();
         while (!isCoursePage() && Date.now() - startTime < CONFIG.NAVIGATION_TIMEOUT && this._isActiveRun(runId)) {
           await sleep(500);
@@ -759,10 +839,10 @@
         }
       }
 
-      // 构建课程模型
+      // 根据当前页面重新构建课程模型，不复用刷新前的目录。
       let model;
       try {
-        model = await CourseModel.buildModel();
+        model = await CourseModel.buildModel({ scanId: forceFreshDirectory ? savedState.directoryScanId : '' });
       } catch (e) {
         logger.error(`课程目录解析异常: ${e.message}`, e.stack);
       }
@@ -783,7 +863,7 @@
         return;
       }
 
-      logger.info("待处理: " + this.tasks.length + " 个任务");
+      logger.info('待处理任务：' + this.tasks.length + ' 个');
 
       // 按稳定的章节/节次/类型三元组恢复；不依赖旧版已废弃的 currentIndex。
       const savedIndex = savedMatchesCurrentCourse
@@ -791,14 +871,14 @@
         : -1;
       if (savedIndex >= 0) {
         this.currentIndex = savedIndex;
-        logger.info("恢复进度: #" + (this.currentIndex + 1) + " " + this.tasks[this.currentIndex].title);
+        logger.info('恢复进度：#' + (this.currentIndex + 1) + ' ' + this.tasks[this.currentIndex].title);
       } else {
         this.currentIndex = 0;
         if (savedMatchesCurrentCourse) logger.info('保存的节次已完成或课程目录已变化，从最早待办继续');
-        logger.info("定位起始: " + this.tasks[0].title);
+        logger.info('起始任务：' + this.tasks[0].title);
       }
 
-      // 同一节的失败次数必须跨“总览页可加载、视频页仍 500”的场景保留；
+      // 同一节的失败次数需要跨“总览页可加载、视频页仍报 500”的场景保留。
       // 真正完成并切换到下一节时，_saveState() 会因任务指针变化自动归零。
       this._saveState();
       await this._processLoop(runId);
@@ -825,16 +905,40 @@
       logger.info('已停止，进度已清除');
     }
 
+    resetCacheAndReload() {
+      const savedState = StateManager.load();
+      const courseId = getCourseIdFromHash() || this.courseId || savedState?.courseId || '';
+      const cleared = StateManager.clearCache();
+      this.stop();
+      this.tasks = [];
+      this.sections = [];
+      this.currentIndex = 0;
+      this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
+
+      if (!courseId) {
+        logger.warn('已清除助手缓存；未识别当前课程，请回到课程总览页后点击开始');
+        return cleared;
+      }
+
+      const scanId = createDirectoryScanId();
+      logger.success(`已清除 ${cleared} 项助手缓存，正在重新加载课程目录`);
+      this._reloadTimer = setTimeout(() => {
+        window.location.hash = courseOverviewHash(courseId, scanId);
+        location.reload();
+      }, CONFIG.CACHE_RESET_RELOAD_DELAY);
+      return cleared;
+    }
+
     skip() {
-      logger.info(`跳过: ${this._currentTitle()}`);
+      logger.info(`跳过：${this._currentTitle()}`);
       this.currentIndex++;
       this._saveState();
     }
 
     async _processLoop(runId) {
-      // 防止双进程：如果已有循环在运行则直接返回
+      // 防止重复处理：已有循环运行时直接返回。
       if (this._loopRunning && this._loopRunId === runId) {
-        logger.warn('_processLoop 已在运行中，跳过重复调用');
+        logger.warn('任务处理循环已在运行中，跳过重复调用');
         return;
       }
       this._loopRunning = true;
@@ -846,12 +950,12 @@
 
         const task = this.tasks[this.currentIndex];
         if (!task) {
-          logger.error(`索引${this.currentIndex}越界(pending共${this.tasks.length}个)，刷新后重新解析`);
+          logger.error(`任务索引 ${this.currentIndex} 越界（待处理共 ${this.tasks.length} 个），刷新后重新解析`);
           this._requestReload('任务索引异常');
           break;
         }
         logger.info(`\n--- [${this.currentIndex + 1}/${this.tasks.length}] ${task.title} ---`);
-        logger.info(`Type: ${task.itemType} | Chapter: ${task.chapterName}`);
+        logger.info(`类型：${getTaskTypeLabel(task.itemType)} | 章节：${task.chapterName}`);
 
         // 二次确认：当前节次是否真的未完成
         if (isCoursePage()) {
@@ -859,7 +963,7 @@
           if (recheckItem) {
             const ll = recheckItem.querySelector('.loadingLinear');
             if (ll && parseFloat(ll.textContent) >= 100) {
-              logger.warn(`二次确认: ${task.title} 已完成(>=100%)，跳过`);
+              logger.warn(`二次确认：${task.title} 已完成（进度不少于 100%），跳过`);
               this.currentIndex++;
               this._saveState();
               continue;
@@ -892,7 +996,7 @@
           this._saveState();
         } else if (!this._reloading && !this.paused) {
           this.stats.errors++;
-          logger.warn(`任务未完成，保留当前节次并刷新重试: ${task.title}`);
+          logger.warn(`任务未完成，保留当前节次并刷新重试：${task.title}`);
           this._requestReload('任务处理失败');
         }
         if (this._reloading) {
@@ -902,7 +1006,7 @@
         await sleep(2000);
       }
 
-      // 旧循环在 stop() 后可能晚于新循环结束；不能清掉新循环的互斥标记。
+      // 旧循环在停止后可能晚于新循环结束，不能清掉新循环的互斥标记。
       if (this._loopRunId !== runId) return;
       this._loopRunning = false;
       this._loopRunId = 0;
@@ -919,7 +1023,7 @@
     }
 
     async _navigateAndProcess(task, runId) {
-      // 视频页/未知页 → 回退到课程页再导航；考试页则在当前页继续处理。
+      // 视频页或未知页先回退到课程页再导航；考试页则在当前页继续处理。
       if (!isCoursePage() && !isExamPage()) {
         logger.info('回退到课程页...');
         history.back();
@@ -932,19 +1036,19 @@
       }
 
       if (!this._isActiveRun(runId)) return false;
-      // 仅在课程页检测 AxiosError，避免视频页残留请求超时误判。
+      // 仅在课程页检测 AxiosError，避免视频页残留的请求超时造成误判。
       if (isCoursePage()) {
         const bodyText = document.body?.innerText || '';
         if (bodyText.includes('AxiosError') && bodyText.includes('timeout')) {
-          logger.warn('检测到 AxiosError timeout，准备刷新恢复...');
-          this._requestReload('AxiosError timeout');
+          logger.warn('检测到请求超时（AxiosError），准备刷新恢复...');
+          this._requestReload('请求超时（AxiosError）');
           return false;
         }
       }
 
       const navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
       if (!navOk) {
-        logger.warn('导航失败: [' + task.itemType + '] ' + task.title);
+        logger.warn('导航失败：[' + getTaskTypeLabel(task.itemType) + '] ' + task.title);
         return false;
       }
       logger.debug(`已触发点击: ${task.title}`);
@@ -990,12 +1094,12 @@
         if (isCoursePage()) {
           const hint = detectOrderHint();
           if (hint) {
-            logger.warn(`平台提示应先完成: "${hint}"`);
+            logger.warn(`平台提示应先完成：“${hint}”`);
             const matchIndex = this.tasks.findIndex(t => hint.includes(t.title) || t.title.includes(hint));
             if (matchIndex >= 0 && matchIndex !== this.currentIndex) {
               this.currentIndex = matchIndex;
               this._saveState({ retryCount: 0, retryAt: null, lastReloadReason: '' });
-              logger.info(`纠错: 下一个处理 "${this.tasks[matchIndex].title}"`);
+              logger.info(`纠错：下一个处理“${this.tasks[matchIndex].title}”`);
               return 'redirected';
             }
             if (matchIndex < 0) logger.warn(`提示节次 "${hint}" 未在待处理列表中匹配到`);
@@ -1015,7 +1119,7 @@
       return false;
     }
 
-    // 看门狗：超过120秒无进展则持久化断点后再刷新。
+    // 看门狗：超过 120 秒无进展时，持久化断点后再刷新。
     _startWatchdog() {
       this._clearWatchdog();
       this._lastProgressTime = Date.now();
@@ -1059,7 +1163,7 @@
         if (!courseId) return null;
         // 首次解析课程目录前也要有可恢复状态，否则此时遇到 500 会无断点可用。
         return {
-          version: 3,
+          version: 4,
           stage: 'initializing',
           courseId,
           stats: { ...this.stats },
@@ -1085,7 +1189,7 @@
         : sameTask ? previous.lastReloadReason || '' : '';
 
       return {
-        version: 3,
+        version: 4,
         courseId,
         chapterIdx: task.chapterIdx,
         pairIdx: task.pairIdx,
@@ -1122,20 +1226,26 @@
         CONFIG.RETRY_DELAY_BASE * Math.pow(2, Math.min(retryCount - 1, 10)),
         CONFIG.RETRY_DELAY_MAX,
       );
-      StateManager.save({
+      const directoryScanId = createDirectoryScanId();
+      const recoveryState = {
         ...state,
         retryCount,
         retryAt: Date.now() + delay,
         lastReloadReason: reason,
         autoResume: true,
+        forceFreshDirectory: true,
+        directoryScanId,
         timestamp: Date.now(),
-      });
+      };
+      StateManager.save(recoveryState);
       this._reloading = true;
       this._longOperation = false;
       this._clearWatchdog();
-      logger.warn(`${reason}，${Math.ceil(delay / 1000)} 秒后刷新（连续第 ${retryCount} 次）...`);
+      logger.warn(`${reason}，${Math.ceil(delay / 1000)} 秒后刷新并重新扫描目录（连续第 ${retryCount} 次）...`);
       this._reloadTimer = setTimeout(() => {
-        if (this._reloading) location.reload();
+        if (!this._reloading) return;
+        window.location.hash = courseOverviewHash(recoveryState.courseId, directoryScanId);
+        location.reload();
       }, delay);
       return true;
     }
@@ -1149,12 +1259,12 @@
       this._clearWatchdog();
       StateManager.clear();
       logger.info('\n========================================');
-      logger.success('全部完成!');
-      logger.info(`视频: ${this.stats.videos} | 考试: ${this.stats.exams} | 错误: ${this.stats.errors}`);
+      logger.success('全部完成！');
+      logger.info(`视频：${this.stats.videos} | 考试：${this.stats.exams} | 错误：${this.stats.errors}`);
     }
   }
 
-  // ======================== UI 控制面板 ========================
+  // ======================== 控制面板 ========================
   class ControlPanel {
     constructor(autoPlayer) {
       this.ap = autoPlayer;
@@ -1197,7 +1307,6 @@
       #ouchn-ap-v2 .log .le[data-l="DEBUG"]{color:#555}
       #ouchn-ap-v2 .dbg-row{display:none;gap:5px;margin-bottom:8px}
       #ouchn-ap-v2 .dbg-row.show{display:flex}
-      #ouchn-ap-v2 .dbg-row input{flex:1;padding:4px 6px;border:1px solid rgba(255,255,255,.08);border-radius:4px;background:rgba(255,255,255,.03);color:#C8C6C2;font-size:10.5px;outline:none;width:40px}
       #ouchn-ap-v2 .dbg-row button{flex:1;padding:4px 3px;border:1px solid rgba(255,255,255,.08);border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;color:#888;background:transparent;transition:all .15s}
       #ouchn-ap-v2 .dbg-row button:hover{border-color:#D4893B;color:#D4893B}
       #ouchn-ap-v2 .resize-handle{position:absolute;bottom:0;right:0;width:14px;height:14px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,rgba(255,255,255,.15) 50%);border-radius:0 0 9px 0}
@@ -1214,22 +1323,21 @@
       this.panel.innerHTML = `
         <div class="hdr"><span>自动刷课助手</span><div class="acts"><button class="btn-tog">-</button></div></div>
         <div class="body">
-          <div class="live"><span class="dot off" id="adot"></span><span id="astatus">idle</span></div>
+          <div class="live"><span class="dot off" id="adot"></span><span id="astatus">待命</span></div>
           <div class="dbg-row" id="dbgrow">
-            <input id="dbgidx" value="0" title="section index">
-            <button id="dbgreset">重置</button>
             <button id="dbgupdate">检查更新</button>
           </div>
           <div class="ctrls">
             <button class="pri" id="bs">开始</button>
             <button id="bp" disabled>暂停</button>
             <button class="dng" id="bx" disabled>停止</button>
-            <button id="bdbg" style="min-width:24px;flex:0 0 auto;padding:5px 5px">D</button>
+            <button class="dng" id="bcache">清缓存重置</button>
+            <button id="bdbg" style="min-width:42px;flex:0 0 auto;padding:5px 5px">调试</button>
           </div>
           <div class="st" id="sb">
-            <span>video <b class="ok">0</b></span>
-            <span>exam <b class="ok">0</b></span>
-            <span>err <b class="er">0</b></span>
+            <span>视频 <b class="ok">0</b></span>
+            <span>考试 <b class="ok">0</b></span>
+            <span>错误 <b class="er">0</b></span>
             <span>0/0</span>
           </div>
           <div class="log" id="la"><div class="le" data-l="INFO">[INFO] 在课程总览页点击「开始」</div></div>
@@ -1239,12 +1347,16 @@
 
       this.panel.querySelector('#bs').addEventListener('click', () => { this.ap.start(); this._ui(); });
       this.panel.querySelector('#bp').addEventListener('click', () => { this.ap.paused ? this.ap.resume() : this.ap.pause(); this._ui(); });
-      this.panel.querySelector('#bx').addEventListener('click', () => { if (confirm('停止?')) { this.ap.stop(); this._ui(); } });
+      this.panel.querySelector('#bx').addEventListener('click', () => { if (confirm('确定停止当前任务吗？')) { this.ap.stop(); this._ui(); } });
+      this.panel.querySelector('#bcache').addEventListener('click', () => {
+        if (!confirm('将停止任务、清除助手缓存并重新加载课程目录；不会退出登录。是否继续？')) return;
+        this.ap.resetCacheAndReload();
+        this._ui();
+      });
       this.panel.querySelector('#bdbg').addEventListener('click', () => {
         const row = this.panel.querySelector('#dbgrow');
         row.classList.toggle('show');
       });
-      this.panel.querySelector('#dbgreset').addEventListener('click', () => { StateManager.clear(); this.ap.stop(); this._ui(); logger.info('状态已重置'); });
       this.panel.querySelector('#dbgupdate').addEventListener('click', () => this._checkUpdate());
       this.panel.querySelector('.btn-tog').addEventListener('click', () => { this.expanded = !this.expanded; this.panel.classList.toggle('mini', !this.expanded); this.panel.querySelector('.btn-tog').textContent = this.expanded ? '-' : '+'; });
 
@@ -1281,34 +1393,34 @@
 
       const sb = this.panel.querySelector('#sb');
       const total = ap.tasks.length || 0;
-      sb.innerHTML = `<span>video <b class="ok">${ap.stats.videos}</b></span>
-        <span>exam <b class="ok">${ap.stats.exams}</b></span>
-        <span>err <b class="er">${ap.stats.errors}</b></span>
+      sb.innerHTML = `<span>视频 <b class="ok">${ap.stats.videos}</b></span>
+        <span>考试 <b class="ok">${ap.stats.exams}</b></span>
+        <span>错误 <b class="er">${ap.stats.errors}</b></span>
         <span>${ap.currentIndex}/${total}</span>`;
     }
 
     async _checkUpdate() {
-      logger.info('检查更新中...');
+      logger.info('正在检查最新发布版本...');
       try {
         const resp = await fetch(CONFIG.RELEASE_API_URL, {
           cache: 'no-store',
           headers: { Accept: 'application/vnd.github+json' },
         });
-        if (!resp.ok) { logger.warn(`无法获取最新 Release（HTTP ${resp.status}）`); return; }
+        if (!resp.ok) { logger.warn(`无法获取最新发布版本（HTTP ${resp.status}）`); return; }
         const release = await resp.json();
         const remoteTag = release.tag_name || release.name;
         const comparison = compareVersions(remoteTag, CONFIG.VERSION);
         if (comparison === null) {
-          logger.warn(`最新 Release 标签无法识别: "${remoteTag || '?'}"`);
+          logger.warn(`最新发布版本标签无法识别："${remoteTag || '?'}"`);
           return;
         }
         if (comparison > 0) {
-          logger.success(`发现新 Release ${remoteTag}（当前 v${CONFIG.VERSION}），正在打开发布页...`);
+          logger.success(`发现新发布版本 ${remoteTag}（当前 v${CONFIG.VERSION}），正在打开发布页...`);
           window.open(release.html_url || 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest', '_blank');
         } else if (comparison === 0) {
-          logger.info(`已是最新已发布版本 v${CONFIG.VERSION}`);
+          logger.info(`当前已是最新发布版本 v${CONFIG.VERSION}`);
         } else {
-          logger.info(`当前开发版本 v${CONFIG.VERSION} 高于最新 Release ${remoteTag}`);
+          logger.info(`当前开发版本 v${CONFIG.VERSION} 高于最新发布版本 ${remoteTag}`);
         }
       } catch (e) {
         logger.warn(`检查更新失败: ${e.message}`);
@@ -1344,7 +1456,7 @@
     const ap = new AutoPlayer();
     new ControlPanel(ap);
 
-    // 断点保存在 localStorage，F5 会重建 window，不能再依赖页面内存标记。
+    // 断点保存在浏览器本地存储（localStorage）中，F5 会重建页面，不能依赖页面内存标记。
     const saved = StateManager.load();
     const currentCourseId = getCourseIdFromHash();
     if (shouldAutoResume(saved, currentCourseId)) {

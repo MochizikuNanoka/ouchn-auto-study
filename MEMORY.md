@@ -15,6 +15,8 @@
 - Course-directory readiness is a stable-DOM condition: wait for chapter headers, then for expanded course items, and log compact `[CourseDirectory]` snapshots when either condition is absent.
 - The injected control panel is outside the platform Vue root (`#app`); never scan the whole document for a bare `500`, because diagnostic lines such as `500=false` would self-trigger the recovery path. Scope platform error text to `#app` and retain visible platform error-toast checks.
 - Task navigation must open collapsed ancestor course items from outermost to innermost before dispatching its task click. Do not expand every task row during model construction.
+- Cache reset must only remove assistant-owned `ouchn_autoplay_*` keys from local/session storage. Never call storage-wide clear methods because they may remove platform login or unrelated preferences.
+- Automatic F5 recovery persists a task pointer plus a unique directory-scan ID, reloads `#/myCourse/study` with that ID, and rebuilds the task list from stable DOM before matching the saved pointer. The full directory model is never persisted.
 - Recovery attempts are intentionally unlimited; exponential delay remains capped to avoid repeatedly hammering the platform.
 - Update checking is based on the latest published GitHub Release tag and numeric version comparison, never branch-file inequality.
 

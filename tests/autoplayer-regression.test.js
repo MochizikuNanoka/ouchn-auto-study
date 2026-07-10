@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const scriptPath = path.join(__dirname, '..', '国开学习平台-自动刷课助手.user.js');
 
-function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map() } = {}) {
+function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(), session = new Map() } = {}) {
   let now = 0;
   let nextTimerId = 1;
   let reloads = 0;
@@ -65,6 +65,14 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map() 
       return Array.isArray(value) ? value : value ? [value] : [];
     },
   };
+  const createStorage = store => ({
+    clear() { store.clear(); },
+    get length() { return store.size; },
+    getItem(key) { return store.has(key) ? store.get(key) : null; },
+    key(index) { return [...store.keys()][index] || null; },
+    removeItem(key) { store.delete(key); },
+    setItem(key, value) { store.set(key, String(value)); },
+  });
   const context = {
     Date: FakeDate,
     JSON,
@@ -79,12 +87,8 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map() 
     getComputedStyle: () => ({ display: 'none' }),
     history: { back() {} },
     location,
-    localStorage: {
-      clear() { storage.clear(); },
-      getItem(key) { return storage.has(key) ? storage.get(key) : null; },
-      removeItem(key) { storage.delete(key); },
-      setItem(key, value) { storage.set(key, String(value)); },
-    },
+    localStorage: createStorage(storage),
+    sessionStorage: createStorage(session),
     setInterval(callback, delay) { return schedule(callback, delay, true); },
     setTimeout(callback, delay) { return schedule(callback, delay, false); },
     window: { location },
@@ -111,6 +115,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map() 
     get reloads() { return reloads; },
     hooks: context.__AUTOPLAYER_TEST_HOOKS__,
     selectors,
+    session,
     storage,
   };
 }
@@ -213,6 +218,134 @@ test('keeps retrying the same task beyond five refreshes', () => {
   const persisted = harness.hooks.StateManager.load();
   assert.equal(persisted.autoResume, true);
   assert.equal(persisted.retryCount, 8);
+});
+
+test('clears only assistant cache keys and preserves unrelated platform storage', () => {
+  const storage = new Map([
+    ['ouchn_autoplay_v2', 'current'],
+    ['ouchn_autoplay_v1', 'legacy'],
+    ['platform-preference', 'keep'],
+  ]);
+  const session = new Map([
+    ['ouchn_autoplay_temp', 'discard'],
+    ['platform-session-hint', 'keep'],
+  ]);
+  const harness = createHarness({ storage, session });
+
+  assert.equal(harness.hooks.StateManager.clearCache(), 3);
+  assert.equal(storage.has('ouchn_autoplay_v2'), false);
+  assert.equal(storage.has('ouchn_autoplay_v1'), false);
+  assert.equal(session.has('ouchn_autoplay_temp'), false);
+  assert.equal(storage.get('platform-preference'), 'keep');
+  assert.equal(session.get('platform-session-hint'), 'keep');
+});
+
+test('cache reset stops the task and reloads the current course overview', () => {
+  const storage = new Map([
+    ['ouchn_autoplay_v2', 'discard'],
+    ['platform-preference', 'keep'],
+  ]);
+  const harness = createHarness({
+    hash: '#/myCourseDetails/vidoStudy?courseId=3016&sectionId=99',
+    storage,
+  });
+  const player = new harness.hooks.AutoPlayer();
+  player.running = true;
+  player.courseId = '3016';
+
+  assert.equal(player.resetCacheAndReload(), 1);
+  assert.equal(player.running, false);
+  assert.equal(storage.has('ouchn_autoplay_v2'), false);
+  assert.equal(storage.get('platform-preference'), 'keep');
+
+  harness.advance(harness.hooks.CONFIG.CACHE_RESET_RELOAD_DELAY);
+  const [route, query] = harness.context.location.hash.split('?');
+  const params = new URLSearchParams(query);
+  assert.equal(harness.reloads, 1);
+  assert.equal(route, '#/myCourse/study');
+  assert.equal(params.get('id'), '3016');
+  assert.ok(params.get('_apScan'));
+});
+
+test('automatic F5 recovery forces a new course-overview directory scan', () => {
+  const harness = createHarness({
+    hash: '#/myCourseDetails/vidoStudy?courseId=3016&sectionId=99',
+  });
+  const player = new harness.hooks.AutoPlayer();
+  player.running = true;
+  player.courseId = '3016';
+  player.tasks = [{
+    chapterIdx: 0,
+    pairIdx: 0,
+    itemType: 'video',
+    title: '1.1 第一节',
+  }];
+  player._saveState();
+
+  assert.equal(player._requestReload('课程目录异常'), true);
+  const checkpoint = harness.hooks.StateManager.load();
+  assert.equal(checkpoint.forceFreshDirectory, true);
+  assert.ok(checkpoint.directoryScanId);
+  assert.equal(checkpoint.chapterIdx, 0);
+  assert.equal(checkpoint.pairIdx, 0);
+
+  harness.advance(2000);
+  const [route, query] = harness.context.location.hash.split('?');
+  const params = new URLSearchParams(query);
+  assert.equal(harness.reloads, 1);
+  assert.equal(route, '#/myCourse/study');
+  assert.equal(params.get('id'), '3016');
+  assert.equal(params.get('_apScan'), checkpoint.directoryScanId);
+});
+
+test('fresh recovery rebuilds tasks from the new directory before matching its checkpoint', async () => {
+  const scanId = 'fresh-directory-a';
+  const storage = new Map([['ouchn_autoplay_v2', JSON.stringify({
+    autoResume: true,
+    chapterIdx: 0,
+    courseId: '3016',
+    directoryScanId: scanId,
+    forceFreshDirectory: true,
+    itemType: 'video',
+    pairIdx: 0,
+    title: '旧目录任务',
+  })]]);
+  const harness = createHarness({
+    hash: `#/myCourse/study?id=3016&_apScan=${scanId}`,
+    storage,
+  });
+  const freshTask = {
+    chapterIdx: 0,
+    chapterName: '第一章',
+    domIndex: 5,
+    itemType: 'video',
+    pairIdx: 0,
+    title: '新目录任务',
+  };
+  let receivedScanId = null;
+  harness.hooks.CourseModel.buildModel = async ({ scanId: received } = {}) => {
+    receivedScanId = received;
+    return { chapters: [] };
+  };
+  harness.hooks.CourseModel.getPendingTasks = () => [freshTask];
+  harness.hooks.AutoPlayer.prototype._processLoop = async function noop() {};
+
+  const player = new harness.hooks.AutoPlayer();
+  player.tasks = [{ title: '内存旧目录任务' }];
+  await player.start();
+
+  assert.equal(receivedScanId, scanId);
+  assert.equal(player.tasks.length, 1);
+  assert.equal(player.tasks[0].title, '新目录任务');
+  assert.equal(harness.hooks.StateManager.load().forceFreshDirectory, undefined);
+  assert.equal(harness.hooks.StateManager.load().directoryScanId, undefined);
+});
+
+test('rejects a fresh directory scan when the route token no longer matches', async () => {
+  const harness = createHarness({ hash: '#/myCourse/study?id=3016&_apScan=current-token' });
+
+  const model = await harness.hooks.CourseModel.buildModel({ scanId: 'old-token' });
+  assert.equal(model, null);
 });
 
 test('compares GitHub Release versions numerically rather than by inequality', () => {
