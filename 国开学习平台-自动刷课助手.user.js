@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.5
+// @version      2.0.6
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.5',
+    VERSION: '2.0.6',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     NAVIGATION_TIMEOUT: 15000,
@@ -82,25 +82,6 @@
       await sleep(500);
     }
     return [];
-  }
-
-  function is500Error() {
-    const serverError = /(?:\b500\b|服务器错误|Internal Server Error)/i;
-    const platformRoot = document.querySelector('#app');
-    const platformText = platformRoot?.innerText || '';
-    if (serverError.test(platformText)) return true;
-
-    if (!platformRoot) {
-      const body = document.body?.innerText || '';
-      const panelText = document.querySelector('#ouchn-ap-v2')?.innerText || '';
-      const bodyWithoutPanel = panelText ? body.replace(panelText, '') : body;
-      if (serverError.test(bodyWithoutPanel)) return true;
-    }
-
-    return [...document.querySelectorAll('.el-message--error')].some(el => {
-      if (el.offsetParent === null) return false;
-      return serverError.test(el.textContent || '');
-    });
   }
 
   function getHashParams(hash = window.location.hash) {
@@ -196,7 +177,6 @@
         chapterCount,
         courseItemCount: document.querySelectorAll('.hoverItem').length,
         loadingCount: document.querySelectorAll('.el-loading-mask, .el-skeleton').length,
-        serverError: is500Error(),
       };
     }
 
@@ -215,12 +195,12 @@
       };
       const summary = `路由=${snapshot.route || '/'} 课程=${snapshot.courseId || '?'} ` +
         `折叠项=${snapshot.allItemCount} 章节=${snapshot.chapterCount} ` +
-        `课程项=${snapshot.courseItemCount} 加载层=${snapshot.loadingCount} 服务器错误=${snapshot.serverError ? '是' : '否'}`;
+        `课程项=${snapshot.courseItemCount} 加载层=${snapshot.loadingCount}`;
       logger[level](`[课程目录] ${stageNames[stage] || '目录状态'}：${summary}`, snapshot);
     }
 
     static isDirectorySnapshotReady(snapshot, requireCourseItems) {
-      if (!isCoursePage() || snapshot.serverError) return false;
+      if (!isCoursePage()) return false;
       if (snapshot.allItemCount === 0 || snapshot.chapterCount === 0) return false;
       return !requireCourseItems || snapshot.courseItemCount > 0;
     }
@@ -240,7 +220,7 @@
         const snapshot = CourseModel.getDirectorySnapshot();
         const ready = CourseModel.isDirectorySnapshotReady(snapshot, requireCourseItems);
         const signature = [snapshot.route, snapshot.allItemCount, snapshot.chapterCount,
-          snapshot.courseItemCount, snapshot.loadingCount, snapshot.serverError].join('|');
+          snapshot.courseItemCount, snapshot.loadingCount].join('|');
 
         if (!ready) {
           if (signature !== lastDiagnostic) {
@@ -605,13 +585,17 @@
     static async waitForPlugin(timeout = 5 * 60 * 1000, shouldContinue = () => true) {
       logger.info('等待爱问答助手完成答题...');
       const start = Date.now();
+      let hasQuestionStatus = false;
       while (Date.now() - start < timeout) {
         if (!shouldContinue()) return false;
         const s = ExamHandler.isPluginDone();
         if (s === 'all_done') return true;
+        if (s !== 'no_cards') hasQuestionStatus = true;
         await sleep(CONFIG.EXAM_CHECK_INTERVAL);
       }
-      logger.error('答题等待超时(5分钟)');
+      logger.error(hasQuestionStatus
+        ? '答题等待超时（5分钟，题目状态未完成）'
+        : '等待题目状态超时（5分钟，未读取到题目状态）');
       return false;
     }
 
@@ -878,7 +862,7 @@
         logger.info('起始任务：' + this.tasks[0].title);
       }
 
-      // 同一节的失败次数需要跨“总览页可加载、视频页仍报 500”的场景保留。
+      // 同一节的失败次数需要跨“总览页可加载、视频页尚未就绪”的场景保留。
       // 真正完成并切换到下一节时，_saveState() 会因任务指针变化自动归零。
       this._saveState();
       await this._processLoop(runId);
@@ -1036,16 +1020,6 @@
       }
 
       if (!this._isActiveRun(runId)) return false;
-      // 仅在课程页检测 AxiosError，避免视频页残留的请求超时造成误判。
-      if (isCoursePage()) {
-        const bodyText = document.body?.innerText || '';
-        if (bodyText.includes('AxiosError') && bodyText.includes('timeout')) {
-          logger.warn('检测到请求超时（AxiosError），准备刷新恢复...');
-          this._requestReload('请求超时（AxiosError）');
-          return false;
-        }
-      }
-
       const navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
       if (!navOk) {
         logger.warn('导航失败：[' + getTaskTypeLabel(task.itemType) + '] ' + task.title);
@@ -1057,12 +1031,6 @@
       for (let attempt = 0; attempt < CONFIG.NAVIGATION_ATTEMPTS; attempt++) {
         if (!this._isActiveRun(runId) || this.paused) return false;
 
-        if (is500Error()) {
-          logger.warn('检测到 500 服务器错误，准备刷新恢复...');
-          this._requestReload('500 服务器错误');
-          return false;
-        }
-
         if (isVideoPage()) {
           this._longOperation = true;
           logger.success('进入视频页面');
@@ -1072,7 +1040,7 @@
             return false;
           }
           return VideoHandler.waitForCompletion(() =>
-            this._isActiveRun(runId) && !this.paused && videoEl.isConnected !== false && !is500Error()
+            this._isActiveRun(runId) && !this.paused && videoEl.isConnected !== false
           );
         }
 
@@ -1080,7 +1048,7 @@
           this._longOperation = true;
           logger.success('进入考试页面');
           const done = await ExamHandler.waitForPlugin(5 * 60 * 1000, () =>
-            this._isActiveRun(runId) && !this.paused && !!document.querySelector('.examQuestion') && !is500Error()
+            this._isActiveRun(runId) && !this.paused && !!document.querySelector('.examQuestion')
           );
           if (!done) {
             logger.warn('答题插件未完成或已暂停');
@@ -1161,7 +1129,7 @@
         }
         const courseId = this.courseId || getCourseIdFromHash();
         if (!courseId) return null;
-        // 首次解析课程目录前也要有可恢复状态，否则此时遇到 500 会无断点可用。
+        // 首次解析课程目录前也要有可恢复状态，否则目录等待超时会无断点可用。
         return {
           version: 4,
           stage: 'initializing',

@@ -105,7 +105,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
   assert.notEqual(instrumented, source, 'ControlPanel test replacement point is missing');
   instrumented = instrumented.replace(
     initMarker,
-    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, is500Error: typeof is500Error === 'function' ? is500Error : undefined, init, shouldAutoResume };\n\n" + initMarker,
+    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
   );
   vm.runInNewContext(instrumented, context, { filename: scriptPath });
 
@@ -358,15 +358,33 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('invalid', '2.0.3'), null);
 });
 
-test('does not mistake the injected diagnostic panel for a platform 500 error', () => {
-  const harness = createHarness();
-  harness.context.document.body.innerText = '[DEBUG] [CourseDirectory] stable-ready: 500=false';
-  harness.selectors.set('#app', { innerText: '课程目录已加载' });
+test('题干含 500 时仍等待题目状态，不按文本刷新', async () => {
+  const harness = createHarness({ hash: '#/examQuestion?id=3016' });
+  harness.context.document.body.innerText = '第 500 题：正常题干内容';
+  harness.selectors.set('#app', { innerText: '第 500 题：正常题干内容' });
+  harness.selectors.set('.examQuestion', {});
 
-  assert.equal(harness.hooks.is500Error(), false);
+  let waitCalls = 0;
+  harness.hooks.CourseModel.navigateToDomIndex = async () => true;
+  harness.hooks.ExamHandler.waitForPlugin = async () => {
+    waitCalls += 1;
+    return false;
+  };
 
-  harness.selectors.set('#app', { innerText: '500 Internal Server Error' });
-  assert.equal(harness.hooks.is500Error(), true);
+  const player = new harness.hooks.AutoPlayer();
+  player.running = true;
+  player._runId = 1;
+  player.courseId = '3016';
+
+  const pending = player._navigateAndProcess({ domIndex: 0, itemType: 'exam', title: '第 500 题' }, 1);
+  await flushPromises();
+  harness.advance(4000);
+  await flushPromises();
+
+  assert.equal(await pending, false);
+  assert.equal(waitCalls, 1, '应进入题目状态等待，而不是按页面文本中断');
+  assert.equal(player._reloading, false);
+  assert.equal(harness.reloads, 0);
 });
 
 test('opens collapsed task ancestors from outermost to innermost', async () => {
@@ -408,8 +426,10 @@ test('opens collapsed task ancestors from outermost to innermost', async () => {
   assert.equal(await pending, 2);
 });
 
-test('waits for a stable course directory rather than one transient DOM node', async () => {
+test('课程页含 500 时仍按稳定 DOM 扫描目录', async () => {
   const harness = createHarness();
+  harness.context.document.body.innerText = '课程内容包含 500，但目录节点正常';
+  harness.selectors.set('#app', { innerText: '课程内容包含 500，但目录节点正常' });
   const chapterHeader = {
     querySelector(selector) {
       return selector === '.chapter_name' ? {} : null;

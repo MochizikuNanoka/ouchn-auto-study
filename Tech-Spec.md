@@ -1,15 +1,15 @@
-# v2.0.5 Technical Specification
+# v2.0.6 技术规格
 
 ## Directory Diagnostics
 
-- Add a structured `CourseModel` diagnostic result for each failed readiness condition: no collapse items, no chapter headers, no parseable task entries, and detected server error.
-- Emit the result through the existing `Logger`, including route, DOM counts, visible error text summary, and retry state. Do not record credentials or full page text.
+- Add a structured `CourseModel` diagnostic result for each failed readiness condition: no collapse items, no chapter headers, or no parseable task entries.
+- Emit the result through the existing `Logger`, including route, DOM counts, and retry state. Do not record credentials or full page text.
 - Keep the existing bootstrap recovery state when parsing fails.
 
-## Server Error Boundary and Expansion
+## 状态等待与目录展开
 
-- Detect error text from the platform Vue root (`#app`) rather than the entire document, because the injected control panel contains diagnostic strings such as `500=false`.
-- Preserve visible `.el-message--error` checks for platform error toasts.
+- Do not inspect arbitrary page text or error toasts for `500`, `服务器错误`, or `AxiosError` to decide whether to refresh.
+- Treat a missing stable course directory, video player, or exam card status after its existing timeout as the only recovery trigger.
 - Expand only chapter-level collapse items during model construction; opening every task row would add avoidable delay.
 - When navigating to a target task, expand each collapsed ancestor collapse item from outermost to innermost before dispatching the task click.
 
@@ -21,7 +21,7 @@
 - On recovery, discard all in-memory task arrays, require the matching scan token in the route, wait for stable DOM, then build a new model before matching the saved task pointer.
 - Keep the scan token out of the next ordinary checkpoint after a successful model rebuild so normal task progression remains compact.
 
-## Chinese User-Facing Copy
+## 中文用户界面文案
 
 - Use Chinese for comments, README prose, panel labels, and log messages.
 - Keep standard log-level tags (`[INFO]`, `[WARN]`, `[ERROR]`, `[SUCCESS]`, `[DEBUG]`) and code/selector identifiers unchanged where they are machine-facing.
