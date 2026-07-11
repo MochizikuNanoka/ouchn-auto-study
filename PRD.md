@@ -1,4 +1,4 @@
-# v2.0.6 状态超时恢复 PRD
+# v2.0.7 状态超时恢复 PRD
 
 ## Goal
 
@@ -9,7 +9,7 @@
 - A temporary platform outage or slow course directory no longer leaves the user at a stopped script after five attempts.
 - Diagnostic records explain why the directory was not recognized, so a platform DOM change can be diagnosed from evidence rather than guesswork.
 - The update panel only announces versions that are newer than the installed version and have actually been published as GitHub Releases.
-- 题干、答题提示或平台正文中出现“500”不会中断答题。
+- 题干、答题提示或平台正文中出现“500”不会中断答题；读到答题卡状态后持续等待插件完成。
 - A user can reset only assistant-owned cache without clearing login state or other platform data.
 - Automatic recovery keeps the current task pointer but discards the prior directory model and rescans the directory.
 
@@ -23,7 +23,7 @@
 6. An automatic F5 recovery writes a unique directory-scan token, reloads the course overview with that token, and rebuilds pending tasks from the newly parsed directory.
 7. User-visible comments, README prose, and runtime logs are Chinese, except unavoidable product names, protocol names, selectors, and code identifiers.
 8. Unit tests cover cache clearing, fresh-scan recovery, version comparison, and existing recovery paths.
-9. The v2.0.6 userscript is committed, pushed to GitHub, tagged, and published as a GitHub Release after verification.
+9. The v2.0.7 userscript is committed, pushed to GitHub, tagged, and published as a GitHub Release after verification.
 
 ## Constraints and Risks
 

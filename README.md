@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.6-%23D4893B" alt="版本">
+  <img src="https://img.shields.io/badge/version-2.0.7-%23D4893B" alt="版本">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="脚本管理器">
   <img src="https://img.shields.io/badge/browser-Edge%20%7C%20Chrome-blue" alt="浏览器">
 </p>
@@ -94,6 +94,7 @@ CourseModel.buildModel()
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| 2.0.7 | 2026-07-11 | 进一步收紧答题恢复：已读取答题卡状态时持续等待插件完成；仅五分钟内未读取到题目状态才刷新。 |
 | 2.0.6 | 2026-07-11 | 删除页面 500/错误文本判定；仅在课程目录、播放器或题目状态等待超时未就绪时刷新，避免题干含“500”误中断答题。 |
 | 2.0.5 | 2026-07-10 | 新增清缓存重置按钮；自动 F5 后强制回到课程总览重新扫描目录；注释、说明文档和日志统一中文化。 |
 | 2.0.4 | 2026-07-10 | 修复助手诊断日志被误判为 500 导致章节无法展开；任务导航会按需展开父级目录。 |

@@ -14,6 +14,7 @@
 - Browser errors should preserve enough state for recovery but must not silently skip a task.
 - Course-directory readiness is a stable-DOM condition: wait for chapter headers, then for expanded course items, and log compact `[CourseDirectory]` snapshots when either condition is absent.
 - 不以页面中的 `500`、服务器错误、`AxiosError` 或错误提示文本触发恢复；题干和平台正常文案可能含这些字样。只在课程目录、视频播放器或题目状态等待超时未就绪时，保存断点并 F5 恢复。
+- 答题卡状态一旦出现，即使答题插件尚未完成也持续等待，不按五分钟完成超时刷新；只有整个等待窗口始终未读取到答题卡状态时才恢复刷新。
 - Task navigation must open collapsed ancestor course items from outermost to innermost before dispatching its task click. Do not expand every task row during model construction.
 - Cache reset must only remove assistant-owned `ouchn_autoplay_*` keys from local/session storage. Never call storage-wide clear methods because they may remove platform login or unrelated preferences.
 - Automatic F5 recovery persists a task pointer plus a unique directory-scan ID, reloads `#/myCourse/study` with that ID, and rebuilds the task list from stable DOM before matching the saved pointer. The full directory model is never persisted.

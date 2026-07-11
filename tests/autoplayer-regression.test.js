@@ -387,6 +387,27 @@ test('题干含 500 时仍等待题目状态，不按文本刷新', async () => 
   assert.equal(harness.reloads, 0);
 });
 
+test('读到题目状态后持续等待完成，不因五分钟超时刷新', async () => {
+  const harness = createHarness();
+  let continueWaiting = true;
+  harness.selectors.set('.everyAnswer', [{
+    classList: { contains: () => false },
+  }]);
+
+  let settled = false;
+  const pending = harness.hooks.ExamHandler.waitForPlugin(4000, () => continueWaiting);
+  pending.then(() => { settled = true; });
+  await flushPromises();
+  harness.advance(6000);
+  await flushPromises();
+  assert.equal(settled, false, '已有题目状态时应继续等待答题插件，而不是触发刷新');
+
+  continueWaiting = false;
+  harness.advance(2000);
+  await flushPromises();
+  assert.equal(await pending, false);
+});
+
 test('opens collapsed task ancestors from outermost to innermost', async () => {
   const harness = createHarness();
   const clicks = [];
