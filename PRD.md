@@ -1,4 +1,4 @@
-# v2.0.7 状态超时恢复 PRD
+# v2.0.8 状态超时恢复 PRD
 
 ## Goal
 
@@ -23,7 +23,7 @@
 6. An automatic F5 recovery writes a unique directory-scan token, reloads the course overview with that token, and rebuilds pending tasks from the newly parsed directory.
 7. User-visible comments, README prose, and runtime logs are Chinese, except unavoidable product names, protocol names, selectors, and code identifiers.
 8. Unit tests cover cache clearing, fresh-scan recovery, version comparison, and existing recovery paths.
-9. The v2.0.7 userscript is committed, pushed to GitHub, tagged, and published as a GitHub Release after verification.
+9. The v2.0.8 userscript is committed, pushed to GitHub, tagged, and published as a GitHub Release after verification.
 
 ## Constraints and Risks
 

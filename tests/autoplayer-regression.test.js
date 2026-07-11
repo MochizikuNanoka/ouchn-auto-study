@@ -12,6 +12,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
   let reloads = 0;
   const timers = new Map();
   const selectors = new Map();
+  const logs = [];
 
   const schedule = (callback, delay, repeat = false) => {
     const id = nextTimerId++;
@@ -82,7 +83,12 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
     URLSearchParams,
     clearInterval: clearTimer,
     clearTimeout: clearTimer,
-    console: { debug() {}, error() {}, log() {}, warn() {} },
+    console: {
+      debug(...args) { logs.push({ level: 'debug', message: String(args[0] || '') }); },
+      error(...args) { logs.push({ level: 'error', message: String(args[0] || '') }); },
+      log(...args) { logs.push({ level: 'log', message: String(args[0] || '') }); },
+      warn(...args) { logs.push({ level: 'warn', message: String(args[0] || '') }); },
+    },
     document,
     getComputedStyle: () => ({ display: 'none' }),
     history: { back() {} },
@@ -114,6 +120,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
     context,
     get reloads() { return reloads; },
     hooks: context.__AUTOPLAYER_TEST_HOOKS__,
+    logs,
     selectors,
     session,
     storage,
@@ -401,6 +408,9 @@ test('读到题目状态后持续等待完成，不因五分钟超时刷新', as
   harness.advance(6000);
   await flushPromises();
   assert.equal(settled, false, '已有题目状态时应继续等待答题插件，而不是触发刷新');
+  const statusLogs = harness.logs.filter(log => log.message.includes('已读取题目状态'));
+  assert.equal(statusLogs.length, 1, '题目状态提示只能在首次读取时输出一次');
+  assert.equal(statusLogs[0].level, 'log', '题目状态提示不应使用 WARN 级别');
 
   continueWaiting = false;
   harness.advance(2000);

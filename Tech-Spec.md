@@ -1,4 +1,4 @@
-# v2.0.7 技术规格
+# v2.0.8 技术规格
 
 ## Directory Diagnostics
 

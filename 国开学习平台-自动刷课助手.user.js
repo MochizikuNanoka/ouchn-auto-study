@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.7
+// @version      2.0.8
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.7',
+    VERSION: '2.0.8',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     NAVIGATION_TIMEOUT: 15000,
@@ -586,17 +586,13 @@
       logger.info('等待爱问答助手完成答题...');
       const start = Date.now();
       let hasQuestionStatus = false;
-      let nextPendingLogAt = timeout;
       while (true) {
         if (!shouldContinue()) return false;
         const s = ExamHandler.isPluginDone();
         if (s === 'all_done') return true;
         if (s !== 'no_cards') {
+          if (!hasQuestionStatus) logger.info('已读取题目状态，继续等待答题插件完成');
           hasQuestionStatus = true;
-          if (Date.now() >= nextPendingLogAt) {
-            logger.warn('题目状态已读取，继续等待答题插件完成，不刷新页面');
-            nextPendingLogAt += timeout;
-          }
         } else if (!hasQuestionStatus && Date.now() - start >= timeout) {
           logger.error('等待题目状态超时（5分钟，未读取到题目状态）');
           return false;
