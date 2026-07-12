@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.8
+// @version      2.0.9
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.8',
+    VERSION: '2.0.9',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     NAVIGATION_TIMEOUT: 15000,
@@ -39,8 +39,10 @@
       this.logs = [];
       this.maxLogs = 300;
       this.onLogCallbacks = [];
+      this.debugEnabled = false;
     }
     _format(level, msg, data) {
+      if (level === LogLevel.DEBUG && !this.debugEnabled) return;
       const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
       const line = `[${ts}] [${level}] ${msg}`;
       const entry = { ts, level, msg, data: data || '', line };
@@ -55,6 +57,7 @@
     error(msg, data) { this._format(LogLevel.ERROR, msg, data); }
     success(msg, data) { this._format(LogLevel.SUCCESS, msg, data); }
     debug(msg, data) { this._format(LogLevel.DEBUG, msg, data); }
+    setDebugEnabled(enabled) { this.debugEnabled = Boolean(enabled); }
     onLog(cb) { this.onLogCallbacks.push(cb); }
     getRecent(n) { return this.logs.slice(-n); }
   }
@@ -1246,43 +1249,59 @@
 
     _build() {
       const css = `
-      #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:420px;background:#0D0D12;border:1px solid rgba(255,255,255,.06);border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.4);font:14px/1.5 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#C8C6C2;user-select:none;text-wrap:pretty;min-width:320px;max-width:800px;resize:both;overflow:hidden}
-      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.06);cursor:move;font-weight:600;font-size:14px;color:#E8E6E3;letter-spacing:.02em}
-      #ouchn-ap-v2 .hdr .acts button{background:none;border:none;color:#666;width:24px;height:24px;border-radius:5px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all .15s}
-      #ouchn-ap-v2 .hdr .acts button:hover{background:rgba(255,255,255,.06);color:#aaa}
-      #ouchn-ap-v2 .body{padding:10px 14px}
-      #ouchn-ap-v2 .live{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:5px 10px;background:rgba(255,255,255,.03);border-radius:6px;font-size:12px;color:#777}
-      #ouchn-ap-v2 .live .dot{width:6px;height:6px;border-radius:50%;background:#D4893B;flex-shrink:0;transition:background .3s}
-      #ouchn-ap-v2 .live .dot.on{animation:pulse2 1.5s ease-in-out infinite}
-      #ouchn-ap-v2 .live .dot.off{background:#444}
-      @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.2}}
-      #ouchn-ap-v2 .ctrls{display:flex;gap:5px;margin-bottom:8px;flex-wrap:wrap}
-      #ouchn-ap-v2 .ctrls button{flex:1;min-width:50px;padding:6px 3px;border:1px solid rgba(255,255,255,.08);border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;color:#999;background:transparent;transition:all .15s}
-      #ouchn-ap-v2 .ctrls button:hover:not(:disabled){border-color:#D4893B;color:#D4893B}
-      #ouchn-ap-v2 .ctrls button:disabled{opacity:.3;cursor:not-allowed}
-      #ouchn-ap-v2 .ctrls .pri{border-color:#D4893B;color:#D4893B}
-      #ouchn-ap-v2 .ctrls .pri:hover:not(:disabled){background:#D4893B;color:#fff}
-      #ouchn-ap-v2 .ctrls .dng{border-color:#C44;color:#C44}
-      #ouchn-ap-v2 .ctrls .dng:hover:not(:disabled){background:#C44;color:#fff}
-      #ouchn-ap-v2 .st{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:4px;margin-bottom:8px;font-size:10px;color:#666}
-      #ouchn-ap-v2 .st span{text-align:center;padding:2px 4px;border-radius:3px;background:rgba(255,255,255,.02)}
-      #ouchn-ap-v2 .st b{font-weight:600}
-      #ouchn-ap-v2 .st .ok{color:#5A9E6F}
-      #ouchn-ap-v2 .st .er{color:#C44}
-      #ouchn-ap-v2 .log{background:rgba(255,255,255,.02);border-radius:6px;max-height:300px;overflow-y:auto;padding:6px 8px;font:10px/1.55 'Cascadia Code','SF Mono','Consolas',monospace}
-      #ouchn-ap-v2 .log .le{padding:1px 0;border-bottom:1px solid rgba(255,255,255,.02);word-break:break-all;color:#777}
+      #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:440px;min-width:320px;max-width:800px;resize:both;overflow:hidden;background:#151411;border:1px solid #3b352d;border-radius:12px;box-shadow:0 18px 42px rgba(25,20,14,.24),0 2px 0 rgba(255,255,255,.03) inset;font:13px/1.5 'PingFang SC','Microsoft YaHei',sans-serif;color:#ddd7cf;user-select:none;text-wrap:pretty}
+      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;min-height:50px;padding:12px 15px 11px;background:#1c1914;border-bottom:1px solid #3b352d;cursor:move}
+      #ouchn-ap-v2 .brand{display:grid;gap:1px}
+      #ouchn-ap-v2 .eyebrow{font-size:9px;font-weight:700;letter-spacing:.18em;color:#a28b73}
+      #ouchn-ap-v2 .panel-title{font:600 18px/1.15 'STSong','Songti SC',serif;letter-spacing:.04em;color:#f3eee6}
+      #ouchn-ap-v2 .acts{display:flex;align-items:center;gap:8px}
+      #ouchn-ap-v2 .version{font:10px/1 'Cascadia Code','SF Mono','Consolas',monospace;color:#82796e}
+      #ouchn-ap-v2 .hdr .acts button{width:27px;height:27px;border:1px solid #4a4339;border-radius:5px;background:transparent;color:#b9afa2;cursor:pointer;font-size:17px;line-height:1;transition:background .15s,color .15s,border-color .15s}
+      #ouchn-ap-v2 .hdr .acts button:hover{background:#2c2720;border-color:#8f7252;color:#f3eee6}
+      #ouchn-ap-v2 .body{padding:12px 14px 14px}
+      #ouchn-ap-v2 .live{display:grid;grid-template-columns:8px 1fr auto;align-items:center;gap:9px;margin-bottom:10px;padding:9px 10px;background:#201d18;border:1px solid #393228;border-radius:7px}
+      #ouchn-ap-v2 .live .dot{width:8px;height:8px;border-radius:50%;background:#786e62;transition:background .25s,box-shadow .25s}
+      #ouchn-ap-v2 .live .dot.on{background:#d4893b;box-shadow:0 0 0 4px rgba(212,137,59,.12);animation:pulse2 1.8s ease-in-out infinite}
+      #ouchn-ap-v2 .live .dot.off{background:#625a50}
+      #ouchn-ap-v2 .live-label{display:block;margin-bottom:1px;font-size:10px;letter-spacing:.08em;color:#938879}
+      #ouchn-ap-v2 .live strong{font:600 14px/1.2 'PingFang SC','Microsoft YaHei',sans-serif;color:#eee8df}
+      #ouchn-ap-v2 .live-note{font-size:10px;color:#8b8175}
+      @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.52}}
+      #ouchn-ap-v2 .ctrls{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+      #ouchn-ap-v2 .ctrls button{min-height:32px;padding:6px 8px;border:1px solid #4a4339;border-radius:5px;cursor:pointer;font:600 11px/1.2 'PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:.03em;color:#c8c0b5;background:#1b1814;transition:background .15s,color .15s,border-color .15s,transform .15s}
+      #ouchn-ap-v2 .ctrls button:hover:not(:disabled){background:#29231d;border-color:#a67a4b;color:#f4eee5;transform:translateY(-1px)}
+      #ouchn-ap-v2 .ctrls button:disabled{opacity:.38;cursor:not-allowed}
+      #ouchn-ap-v2 .ctrls .pri{grid-column:span 2;border-color:#d4893b;background:#d4893b;color:#21170d;font-size:12px}
+      #ouchn-ap-v2 .ctrls .pri:hover:not(:disabled){background:#e3a55c;border-color:#e3a55c;color:#21170d}
+      #ouchn-ap-v2 .ctrls .dng{color:#d88e86}
+      #ouchn-ap-v2 .ctrls .dng:hover:not(:disabled){border-color:#ba625b;color:#f4d5d1}
+      #ouchn-ap-v2 .ctrls .muted{color:#b7aa99}
+      #ouchn-ap-v2 .ctrls .debug-button{font-size:10px;color:#948a7d}
+      #ouchn-ap-v2 .ctrls button:focus-visible,#ouchn-ap-v2 .hdr .acts button:focus-visible,#ouchn-ap-v2 .dbg-row button:focus-visible{outline:2px solid #e3a55c;outline-offset:2px}
+      #ouchn-ap-v2 .st{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+      #ouchn-ap-v2 .st span{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-height:31px;padding:6px 8px;border:1px solid #332e27;border-radius:5px;background:#1a1814;color:#9d9285}
+      #ouchn-ap-v2 .st small{font-size:10px;letter-spacing:.04em}
+      #ouchn-ap-v2 .st b{font:600 13px/1 'Cascadia Code','SF Mono','Consolas',monospace;color:#e7dfd4}
+      #ouchn-ap-v2 .st .ok{color:#83b089}
+      #ouchn-ap-v2 .st .er{color:#d88e86}
+      #ouchn-ap-v2 .log-wrap{border:1px solid #332e27;border-radius:7px;overflow:hidden;background:#12110f}
+      #ouchn-ap-v2 .log-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border-bottom:1px solid #332e27;background:#1a1814;font-size:10px;letter-spacing:.08em;color:#a79a8a}
+      #ouchn-ap-v2 .log-head span{font:9px/1 'Cascadia Code','SF Mono','Consolas',monospace;color:#756c61}
+      #ouchn-ap-v2 .log{max-height:260px;overflow-y:auto;padding:6px 9px;font:10px/1.6 'Cascadia Code','SF Mono','Consolas',monospace}
+      #ouchn-ap-v2 .log .le{padding:2px 0;border-bottom:1px solid rgba(255,255,255,.035);word-break:break-all;color:#a79d90}
       #ouchn-ap-v2 .log .le[data-l="ERROR"]{color:#E05555}
       #ouchn-ap-v2 .log .le[data-l="WARN"]{color:#D4893B}
       #ouchn-ap-v2 .log .le[data-l="SUCCESS"]{color:#5A9E6F}
       #ouchn-ap-v2 .log .le[data-l="DEBUG"]{color:#555}
-      #ouchn-ap-v2 .dbg-row{display:none;gap:5px;margin-bottom:8px}
+      #ouchn-ap-v2 .dbg-row{display:none;gap:6px;margin-bottom:10px}
       #ouchn-ap-v2 .dbg-row.show{display:flex}
-      #ouchn-ap-v2 .dbg-row button{flex:1;padding:4px 3px;border:1px solid rgba(255,255,255,.08);border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;color:#888;background:transparent;transition:all .15s}
-      #ouchn-ap-v2 .dbg-row button:hover{border-color:#D4893B;color:#D4893B}
-      #ouchn-ap-v2 .resize-handle{position:absolute;bottom:0;right:0;width:14px;height:14px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,rgba(255,255,255,.15) 50%);border-radius:0 0 9px 0}
-      #ouchn-ap-v2 .resize-handle:hover{background:linear-gradient(135deg,transparent 50%,#D4893B 50%)}
+      #ouchn-ap-v2 .dbg-row button{flex:1;padding:6px 8px;border:1px solid #4a4339;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;color:#b7aa99;background:#1a1814;transition:background .15s,border-color .15s,color .15s}
+      #ouchn-ap-v2 .dbg-row button:hover{background:#29231d;border-color:#a67a4b;color:#f4eee5}
+      #ouchn-ap-v2 .resize-handle{position:absolute;bottom:4px;right:4px;width:10px;height:10px;cursor:nwse-resize;border-right:2px solid #746756;border-bottom:2px solid #746756}
+      #ouchn-ap-v2 .resize-handle:hover{border-color:#e3a55c}
       #ouchn-ap-v2.mini .body{display:none}
-      #ouchn-ap-v2.mini{width:auto;resize:none}
+      #ouchn-ap-v2.mini{width:218px;min-width:218px;resize:none}
+      @media (max-width:460px){#ouchn-ap-v2{right:8px;top:56px;width:calc(100vw - 16px);min-width:0}#ouchn-ap-v2 .body{padding:10px}#ouchn-ap-v2 .panel-title{font-size:17px}}
       `;
       const style = document.createElement('style');
       style.textContent = css;
@@ -1291,26 +1310,30 @@
       this.panel = document.createElement('div');
       this.panel.id = 'ouchn-ap-v2';
       this.panel.innerHTML = `
-        <div class="hdr"><span>自动刷课助手</span><div class="acts"><button class="btn-tog">-</button></div></div>
+        <div class="hdr">
+          <div class="brand"><span class="eyebrow">学习自动化</span><span class="panel-title">自动刷课助手</span></div>
+          <div class="acts"><span class="version">v${CONFIG.VERSION}</span><button class="btn-tog" aria-label="折叠面板">-</button></div>
+        </div>
         <div class="body">
-          <div class="live"><span class="dot off" id="adot"></span><span id="astatus">待命</span></div>
-          <div class="dbg-row" id="dbgrow">
-            <button id="dbgupdate">检查更新</button>
-          </div>
+          <div class="live"><span class="dot off" id="adot"></span><div><span class="live-label">当前状态</span><strong id="astatus">待命</strong></div><span class="live-note">可拖动</span></div>
           <div class="ctrls">
-            <button class="pri" id="bs">开始</button>
+            <button class="pri" id="bs">开始学习</button>
             <button id="bp" disabled>暂停</button>
             <button class="dng" id="bx" disabled>停止</button>
-            <button class="dng" id="bcache">清缓存重置</button>
-            <button id="bdbg" style="min-width:42px;flex:0 0 auto;padding:5px 5px">调试</button>
+            <button class="muted" id="bcache">清缓存重置</button>
+            <button class="debug-button" id="bdbg">调试与更新</button>
+          </div>
+          <div class="dbg-row" id="dbgrow">
+            <button id="dbgupdate">检查最新发布版本</button>
+            <button id="dbglog">DEBUG：关闭</button>
           </div>
           <div class="st" id="sb">
-            <span>视频 <b class="ok">0</b></span>
-            <span>考试 <b class="ok">0</b></span>
-            <span>错误 <b class="er">0</b></span>
-            <span>0/0</span>
+            <span><small>视频完成</small><b class="ok">0</b></span>
+            <span><small>考试完成</small><b class="ok">0</b></span>
+            <span><small>异常次数</small><b class="er">0</b></span>
+            <span><small>当前进度</small><b>0/0</b></span>
           </div>
-          <div class="log" id="la"><div class="le" data-l="INFO">[INFO] 在课程总览页点击「开始」</div></div>
+          <div class="log-wrap"><div class="log-head">运行记录 <span>实时</span></div><div class="log" id="la"><div class="le" data-l="INFO">[INFO] 在课程总览页点击「开始学习」</div></div></div>
           <div class="resize-handle"></div>
         </div>`;
       document.body.appendChild(this.panel);
@@ -1328,6 +1351,11 @@
         row.classList.toggle('show');
       });
       this.panel.querySelector('#dbgupdate').addEventListener('click', () => this._checkUpdate());
+      this.panel.querySelector('#dbglog').addEventListener('click', () => {
+        logger.setDebugEnabled(!logger.debugEnabled);
+        logger.info(logger.debugEnabled ? 'DEBUG 日志已开启' : 'DEBUG 日志已关闭');
+        this._ui();
+      });
       this.panel.querySelector('.btn-tog').addEventListener('click', () => { this.expanded = !this.expanded; this.panel.classList.toggle('mini', !this.expanded); this.panel.querySelector('.btn-tog').textContent = this.expanded ? '-' : '+'; });
 
       this._makeDraggable();
@@ -1355,6 +1383,7 @@
       this.panel.querySelector('#bp').disabled = !ap.running;
       this.panel.querySelector('#bx').disabled = !ap.running;
       this.panel.querySelector('#bp').textContent = paused ? '继续' : '暂停';
+      this.panel.querySelector('#dbglog').textContent = logger.debugEnabled ? 'DEBUG：开启' : 'DEBUG：关闭';
 
       const dot = this.panel.querySelector('#adot');
       const st = this.panel.querySelector('#astatus');
@@ -1363,10 +1392,10 @@
 
       const sb = this.panel.querySelector('#sb');
       const total = ap.tasks.length || 0;
-      sb.innerHTML = `<span>视频 <b class="ok">${ap.stats.videos}</b></span>
-        <span>考试 <b class="ok">${ap.stats.exams}</b></span>
-        <span>错误 <b class="er">${ap.stats.errors}</b></span>
-        <span>${ap.currentIndex}/${total}</span>`;
+      sb.innerHTML = `<span><small>视频完成</small><b class="ok">${ap.stats.videos}</b></span>
+        <span><small>考试完成</small><b class="ok">${ap.stats.exams}</b></span>
+        <span><small>异常次数</small><b class="er">${ap.stats.errors}</b></span>
+        <span><small>当前进度</small><b>${ap.currentIndex}/${total}</b></span>`;
     }
 
     async _checkUpdate() {

@@ -111,7 +111,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
   assert.notEqual(instrumented, source, 'ControlPanel test replacement point is missing');
   instrumented = instrumented.replace(
     initMarker,
-    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
+    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
   );
   vm.runInNewContext(instrumented, context, { filename: scriptPath });
 
@@ -363,6 +363,24 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('v2.0.2', '2.0.2'), 0);
   assert.equal(compareVersions('v2.0.10', '2.0.3'), 1);
   assert.equal(compareVersions('invalid', '2.0.3'), null);
+});
+
+test('DEBUG 日志默认关闭，用户可显式切换', () => {
+  const harness = createHarness();
+  const { logger } = harness.hooks;
+  const initialCount = logger.getRecent(300).length;
+
+  logger.debug('默认不应输出');
+  assert.equal(logger.getRecent(300).length, initialCount);
+
+  logger.setDebugEnabled(true);
+  logger.debug('开启后应输出');
+  assert.equal(logger.getRecent(300).at(-1).msg, '开启后应输出');
+  assert.equal(harness.logs.at(-1).level, 'log');
+
+  logger.setDebugEnabled(false);
+  logger.debug('关闭后不应输出');
+  assert.equal(logger.getRecent(300).at(-1).msg, '开启后应输出');
 });
 
 test('题干含 500 时仍等待题目状态，不按文本刷新', async () => {
