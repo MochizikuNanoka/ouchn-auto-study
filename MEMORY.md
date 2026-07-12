@@ -19,6 +19,7 @@
 - 控制面板采用「暖石墨控制台」方向：墨黑底、暖白文字、陶土橙仅用于主操作和运行状态；状态、操作、统计和日志保持分区，避免霓虹渐变和装饰性图标。
 - DEBUG 日志默认关闭，只在“调试与更新”中显式开启；关闭时同时过滤助手面板和本脚本控制台输出。外部答题插件的控制台日志不受本脚本控制。
 - 项目规格文档放在 `docs/`，发布封面放在 `assets/`；根目录的 `log.txt` 是本地诊断样本，保持忽略且不发布。
+- 平台空白题适配：答题卡 `AnswerEnd` 完成比例至少 80% 且完成数量连续 40 秒未增加时，继续原有交卷流程；完成数增加必须重置计时，答题卡缺失仍走状态等待超时。
 - Task navigation must open collapsed ancestor course items from outermost to innermost before dispatching its task click. Do not expand every task row during model construction.
 - Cache reset must only remove assistant-owned `ouchn_autoplay_*` keys from local/session storage. Never call storage-wide clear methods because they may remove platform login or unrelated preferences.
 - Automatic F5 recovery persists a task pointer plus a unique directory-scan ID, reloads `#/myCourse/study` with that ID, and rebuilds the task list from stable DOM before matching the saved pointer. The full directory model is never persisted.

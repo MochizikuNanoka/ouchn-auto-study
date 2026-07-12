@@ -436,6 +436,53 @@ test('读到题目状态后持续等待完成，不因五分钟超时刷新', as
   assert.equal(await pending, false);
 });
 
+test('多数题目完成且 40 秒无进展时允许交卷', async () => {
+  const harness = createHarness();
+  harness.hooks.CONFIG.EXAM_STALLED_COMPLETE_RATIO = 0.8;
+  harness.hooks.CONFIG.EXAM_STALLED_COMPLETE_MS = 4000;
+  harness.selectors.set('.everyAnswer', [
+    { classList: { contains: value => value === 'AnswerEnd' } },
+    { classList: { contains: value => value === 'AnswerEnd' } },
+    { classList: { contains: value => value === 'AnswerEnd' } },
+    { classList: { contains: value => value === 'AnswerEnd' } },
+    { classList: { contains: () => false } },
+  ]);
+
+  let settled = false;
+  const pending = harness.hooks.ExamHandler.waitForPlugin(5 * 60 * 1000, () => true);
+  pending.then(() => { settled = true; });
+  await flushPromises();
+  harness.advance(4000);
+  await flushPromises();
+
+  assert.equal(settled, true, '空白题跳过后不应无限等待');
+  assert.equal(await pending, true);
+});
+
+test('答题完成数增加时重新计算空白题停滞时间', async () => {
+  const harness = createHarness();
+  harness.hooks.CONFIG.EXAM_STALLED_COMPLETE_RATIO = 0.8;
+  harness.hooks.CONFIG.EXAM_STALLED_COMPLETE_MS = 4000;
+  let doneCount = 8;
+  harness.selectors.set('.everyAnswer', Array.from({ length: 10 }, (_, index) => ({
+    classList: { contains: value => value === 'AnswerEnd' && index < doneCount },
+  })));
+
+  let settled = false;
+  const pending = harness.hooks.ExamHandler.waitForPlugin(5 * 60 * 1000, () => true);
+  pending.then(() => { settled = true; });
+  await flushPromises();
+  harness.advance(2000);
+  doneCount = 9;
+  harness.advance(2000);
+  await flushPromises();
+  assert.equal(settled, false, '有新增完成题目时不应沿用旧的停滞计时');
+
+  harness.advance(4000);
+  await flushPromises();
+  assert.equal(await pending, true);
+});
+
 test('opens collapsed task ancestors from outermost to innermost', async () => {
   const harness = createHarness();
   const clicks = [];

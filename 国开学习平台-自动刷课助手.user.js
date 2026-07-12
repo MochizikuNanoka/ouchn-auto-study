@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.9
+// @version      2.0.10
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,9 +14,11 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.9',
+    VERSION: '2.0.10',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
+    EXAM_STALLED_COMPLETE_RATIO: 0.8,
+    EXAM_STALLED_COMPLETE_MS: 40000,
     NAVIGATION_TIMEOUT: 15000,
     COURSE_DIRECTORY_TIMEOUT: 30000,
     COURSE_DIRECTORY_STABLE_MS: 1500,
@@ -577,25 +579,38 @@
   class ExamHandler {
     static isPluginDone() {
       const cards = document.querySelectorAll('.everyAnswer');
-      if (cards.length === 0) return 'no_cards';
+      if (cards.length === 0) return { state: 'no_cards', done: 0, total: 0 };
       const done = [...cards].filter(c => c.classList.contains('AnswerEnd')).length;
       const total = cards.length;
-      if (done === total) { logger.success(`答题完成 (${done}/${total})`); return 'all_done'; }
+      if (done === total) { logger.success(`答题完成 (${done}/${total})`); return { state: 'all_done', done, total }; }
       logger.debug(`答题进度: ${done}/${total}`);
-      return 'in_progress';
+      return { state: 'in_progress', done, total };
     }
 
     static async waitForPlugin(timeout = 5 * 60 * 1000, shouldContinue = () => true) {
       logger.info('等待爱问答助手完成答题...');
       const start = Date.now();
       let hasQuestionStatus = false;
+      let lastDoneCount = -1;
+      let lastProgressAt = 0;
       while (true) {
         if (!shouldContinue()) return false;
-        const s = ExamHandler.isPluginDone();
-        if (s === 'all_done') return true;
-        if (s !== 'no_cards') {
+        const progress = ExamHandler.isPluginDone();
+        if (progress.state === 'all_done') return true;
+        if (progress.state !== 'no_cards') {
           if (!hasQuestionStatus) logger.info('已读取题目状态，继续等待答题插件完成');
           hasQuestionStatus = true;
+          if (progress.done !== lastDoneCount) {
+            lastDoneCount = progress.done;
+            lastProgressAt = Date.now();
+          } else if (
+            progress.done > 0 &&
+            progress.done / progress.total >= CONFIG.EXAM_STALLED_COMPLETE_RATIO &&
+            Date.now() - lastProgressAt >= CONFIG.EXAM_STALLED_COMPLETE_MS
+          ) {
+            logger.warn(`答题进度停滞 ${Math.round(CONFIG.EXAM_STALLED_COMPLETE_MS / 1000)} 秒，已完成 ${progress.done}/${progress.total}，疑似存在空白题，继续交卷`);
+            return true;
+          }
         } else if (!hasQuestionStatus && Date.now() - start >= timeout) {
           logger.error('等待题目状态超时（5分钟，未读取到题目状态）');
           return false;

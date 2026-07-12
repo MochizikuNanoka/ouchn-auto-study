@@ -1,8 +1,8 @@
-# v2.0.9 控制面板与日志整理 PRD
+# v2.0.10 空白题交卷适配 PRD
 
 ## Goal
 
-移除页面文本中的 500/错误判定。只有课程目录、视频播放器或答题状态在规定等待时间内没有就绪时，才执行可恢复的 F5；刷新后仍从新的课程总览目录重建任务。
+当学习平台题目为空、答题插件跳过个别题时，已完成大多数题目的考试不再无限等待；仅在完成比例达到安全阈值且答题进度停滞后继续交卷。
 
 ## User Value
 
@@ -10,6 +10,7 @@
 - Diagnostic records explain why the directory was not recognized, so a platform DOM change can be diagnosed from evidence rather than guesswork.
 - The update panel only announces versions that are newer than the installed version and have actually been published as GitHub Releases.
 - 题干、答题提示或平台正文中出现“500”不会中断答题；读到答题卡状态后持续等待插件完成。
+- 个别空白题不会阻塞已完成大多数题目的自动交卷。
 - A user can reset only assistant-owned cache without clearing login state or other platform data.
 - Automatic recovery keeps the current task pointer but discards the prior directory model and rescans the directory.
 
@@ -23,7 +24,7 @@
 6. An automatic F5 recovery writes a unique directory-scan token, reloads the course overview with that token, and rebuilds pending tasks from the newly parsed directory.
 7. User-visible comments, README prose, and runtime logs are Chinese, except unavoidable product names, protocol names, selectors, and code identifiers.
 8. Unit tests cover cache clearing, fresh-scan recovery, version comparison, and existing recovery paths.
-9. The v2.0.9 userscript is committed, pushed to GitHub, tagged, and published as a GitHub Release after verification.
+9. The v2.0.10 userscript is committed, pushed to GitHub, tagged, and published as a GitHub Release after verification.
 
 ## Constraints and Risks
 

@@ -1,4 +1,4 @@
-# v2.0.9 技术规格
+# v2.0.10 技术规格
 
 ## Directory Diagnostics
 
@@ -10,6 +10,7 @@
 
 - Do not inspect arbitrary page text or error toasts for `500`, `服务器错误`, or `AxiosError` to decide whether to refresh.
 - Treat a missing stable course directory, video player, or exam card status after its existing timeout as the only recovery trigger. Once exam card status exists, keep waiting for completion instead of refreshing.
+- When `AnswerEnd` cards account for at least 80% of the answer cards and their count has not increased for 40 seconds, continue into the existing submit flow. Reset the 40-second timer whenever the completed-card count grows.
 - Expand only chapter-level collapse items during model construction; opening every task row would add avoidable delay.
 - When navigating to a target task, expand each collapsed ancestor collapse item from outermost to innermost before dispatching the task click.
 
