@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.10-%23D4893B" alt="版本">
+  <img src="https://img.shields.io/badge/version-2.0.11-%230A84FF" alt="版本">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="脚本管理器">
   <img src="https://img.shields.io/badge/browser-Edge%20%7C%20Chrome-blue" alt="浏览器">
 </p>
@@ -94,6 +94,7 @@ CourseModel.buildModel()
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| 2.0.11 | 2026-07-13 | 控制面板升级为 Apple 风格深色玻璃材质；优化系统字体、系统语义色、按压反馈和无障碍偏好，并修复折叠按钮首次点击无效。 |
 | 2.0.10 | 2026-07-12 | 适配平台空白题：答题卡完成至少 80% 且 40 秒无新增完成题时，继续执行交卷。 |
 | 2.0.9 | 2026-07-12 | 美化控制面板；新增 DEBUG 日志开关，默认隐藏调试输出；整理项目文档和封面目录。 |
 | 2.0.8 | 2026-07-11 | 修复已读取题目状态后的重复 WARN 日志；该状态仅记录一次 INFO。 |

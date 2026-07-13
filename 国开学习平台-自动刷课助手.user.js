@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.10
+// @version      2.0.11
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.10',
+    VERSION: '2.0.11',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -1257,66 +1257,72 @@
     constructor(autoPlayer) {
       this.ap = autoPlayer;
       this.panel = null;
-      this.expanded = false; // 默认折叠
+      this.expanded = true; // 面板初始显示完整内容
       this._build();
       logger.onLog(e => this._addLog(e));
     }
 
     _build() {
       const css = `
-      #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:440px;min-width:320px;max-width:800px;resize:both;overflow:hidden;background:#151411;border:1px solid #3b352d;border-radius:12px;box-shadow:0 18px 42px rgba(25,20,14,.24),0 2px 0 rgba(255,255,255,.03) inset;font:13px/1.5 'PingFang SC','Microsoft YaHei',sans-serif;color:#ddd7cf;user-select:none;text-wrap:pretty}
-      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;min-height:50px;padding:12px 15px 11px;background:#1c1914;border-bottom:1px solid #3b352d;cursor:move}
-      #ouchn-ap-v2 .brand{display:grid;gap:1px}
-      #ouchn-ap-v2 .eyebrow{font-size:9px;font-weight:700;letter-spacing:.18em;color:#a28b73}
-      #ouchn-ap-v2 .panel-title{font:600 18px/1.15 'STSong','Songti SC',serif;letter-spacing:.04em;color:#f3eee6}
-      #ouchn-ap-v2 .acts{display:flex;align-items:center;gap:8px}
-      #ouchn-ap-v2 .version{font:10px/1 'Cascadia Code','SF Mono','Consolas',monospace;color:#82796e}
-      #ouchn-ap-v2 .hdr .acts button{width:27px;height:27px;border:1px solid #4a4339;border-radius:5px;background:transparent;color:#b9afa2;cursor:pointer;font-size:17px;line-height:1;transition:background .15s,color .15s,border-color .15s}
-      #ouchn-ap-v2 .hdr .acts button:hover{background:#2c2720;border-color:#8f7252;color:#f3eee6}
+      #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:440px;min-width:320px;max-width:800px;resize:both;overflow:hidden;color-scheme:dark;background:rgba(28,28,30,.82);border:1px solid rgba(255,255,255,.14);border-radius:16px;box-shadow:0 24px 56px rgba(0,0,0,.32),0 1px 0 rgba(255,255,255,.12) inset;backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);font:13px/1.5 -apple-system,BlinkMacSystemFont,'SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif;color:#f5f5f7;user-select:none;text-wrap:pretty}
+      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;min-height:54px;padding:12px 15px;background:rgba(44,44,46,.52);border-bottom:1px solid rgba(255,255,255,.1);cursor:move}
+      #ouchn-ap-v2 .brand{display:grid;gap:2px}
+      #ouchn-ap-v2 .eyebrow{font-size:10px;font-weight:700;letter-spacing:.08em;color:#98989d}
+      #ouchn-ap-v2 .panel-title{font:600 17px/1.15 -apple-system,BlinkMacSystemFont,'SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:-.01em;color:#fff}
+      #ouchn-ap-v2 .acts{display:flex;align-items:center;gap:9px}
+      #ouchn-ap-v2 .version{font:10px/1 'SF Mono','Cascadia Code','Consolas',monospace;color:#98989d}
+      #ouchn-ap-v2 .hdr .acts button{width:28px;height:28px;border:1px solid rgba(255,255,255,.12);border-radius:50%;background:rgba(255,255,255,.08);color:#d1d1d6;cursor:pointer;font-size:17px;line-height:1;transition:background .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .hdr .acts button:hover{background:rgba(255,255,255,.16);color:#fff}
+      #ouchn-ap-v2 .hdr .acts button:active{transform:scale(.94);transition-duration:.1s}
       #ouchn-ap-v2 .body{padding:12px 14px 14px}
-      #ouchn-ap-v2 .live{display:grid;grid-template-columns:8px 1fr auto;align-items:center;gap:9px;margin-bottom:10px;padding:9px 10px;background:#201d18;border:1px solid #393228;border-radius:7px}
-      #ouchn-ap-v2 .live .dot{width:8px;height:8px;border-radius:50%;background:#786e62;transition:background .25s,box-shadow .25s}
-      #ouchn-ap-v2 .live .dot.on{background:#d4893b;box-shadow:0 0 0 4px rgba(212,137,59,.12);animation:pulse2 1.8s ease-in-out infinite}
-      #ouchn-ap-v2 .live .dot.off{background:#625a50}
-      #ouchn-ap-v2 .live-label{display:block;margin-bottom:1px;font-size:10px;letter-spacing:.08em;color:#938879}
-      #ouchn-ap-v2 .live strong{font:600 14px/1.2 'PingFang SC','Microsoft YaHei',sans-serif;color:#eee8df}
-      #ouchn-ap-v2 .live-note{font-size:10px;color:#8b8175}
-      @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.52}}
-      #ouchn-ap-v2 .ctrls{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
-      #ouchn-ap-v2 .ctrls button{min-height:32px;padding:6px 8px;border:1px solid #4a4339;border-radius:5px;cursor:pointer;font:600 11px/1.2 'PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:.03em;color:#c8c0b5;background:#1b1814;transition:background .15s,color .15s,border-color .15s,transform .15s}
-      #ouchn-ap-v2 .ctrls button:hover:not(:disabled){background:#29231d;border-color:#a67a4b;color:#f4eee5;transform:translateY(-1px)}
+      #ouchn-ap-v2 .live{display:grid;grid-template-columns:8px 1fr auto;align-items:center;gap:10px;margin-bottom:10px;padding:10px 11px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:11px}
+      #ouchn-ap-v2 .live .dot{width:8px;height:8px;border-radius:50%;background:#8e8e93;transition:background .24s ease,box-shadow .24s ease}
+      #ouchn-ap-v2 .live .dot.on{background:#30d158;box-shadow:0 0 0 4px rgba(48,209,88,.16);animation:ap-status-pulse 1.8s ease-in-out infinite}
+      #ouchn-ap-v2 .live .dot.off{background:#8e8e93}
+      #ouchn-ap-v2 .live-label{display:block;margin-bottom:2px;font-size:10px;letter-spacing:.04em;color:#98989d}
+      #ouchn-ap-v2 .live strong{font:600 14px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#fff}
+      #ouchn-ap-v2 .live-note{font-size:10px;color:#98989d}
+      @keyframes ap-status-pulse{0%,100%{opacity:1}50%{opacity:.58}}
+      #ouchn-ap-v2 .ctrls{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
+      #ouchn-ap-v2 .ctrls button{min-height:34px;padding:7px 9px;border:1px solid rgba(255,255,255,.1);border-radius:9px;cursor:pointer;font:600 11px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:.01em;color:#f5f5f7;background:rgba(255,255,255,.1);transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .ctrls button:hover:not(:disabled){background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.18);transform:translateY(-1px)}
+      #ouchn-ap-v2 .ctrls button:active:not(:disabled){transform:scale(.97);transition-duration:.1s}
       #ouchn-ap-v2 .ctrls button:disabled{opacity:.38;cursor:not-allowed}
-      #ouchn-ap-v2 .ctrls .pri{grid-column:span 2;border-color:#d4893b;background:#d4893b;color:#21170d;font-size:12px}
-      #ouchn-ap-v2 .ctrls .pri:hover:not(:disabled){background:#e3a55c;border-color:#e3a55c;color:#21170d}
-      #ouchn-ap-v2 .ctrls .dng{color:#d88e86}
-      #ouchn-ap-v2 .ctrls .dng:hover:not(:disabled){border-color:#ba625b;color:#f4d5d1}
-      #ouchn-ap-v2 .ctrls .muted{color:#b7aa99}
-      #ouchn-ap-v2 .ctrls .debug-button{font-size:10px;color:#948a7d}
-      #ouchn-ap-v2 .ctrls button:focus-visible,#ouchn-ap-v2 .hdr .acts button:focus-visible,#ouchn-ap-v2 .dbg-row button:focus-visible{outline:2px solid #e3a55c;outline-offset:2px}
-      #ouchn-ap-v2 .st{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
-      #ouchn-ap-v2 .st span{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-height:31px;padding:6px 8px;border:1px solid #332e27;border-radius:5px;background:#1a1814;color:#9d9285}
-      #ouchn-ap-v2 .st small{font-size:10px;letter-spacing:.04em}
-      #ouchn-ap-v2 .st b{font:600 13px/1 'Cascadia Code','SF Mono','Consolas',monospace;color:#e7dfd4}
-      #ouchn-ap-v2 .st .ok{color:#83b089}
-      #ouchn-ap-v2 .st .er{color:#d88e86}
-      #ouchn-ap-v2 .log-wrap{border:1px solid #332e27;border-radius:7px;overflow:hidden;background:#12110f}
-      #ouchn-ap-v2 .log-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border-bottom:1px solid #332e27;background:#1a1814;font-size:10px;letter-spacing:.08em;color:#a79a8a}
-      #ouchn-ap-v2 .log-head span{font:9px/1 'Cascadia Code','SF Mono','Consolas',monospace;color:#756c61}
-      #ouchn-ap-v2 .log{max-height:260px;overflow-y:auto;padding:6px 9px;font:10px/1.6 'Cascadia Code','SF Mono','Consolas',monospace}
-      #ouchn-ap-v2 .log .le{padding:2px 0;border-bottom:1px solid rgba(255,255,255,.035);word-break:break-all;color:#a79d90}
-      #ouchn-ap-v2 .log .le[data-l="ERROR"]{color:#E05555}
-      #ouchn-ap-v2 .log .le[data-l="WARN"]{color:#D4893B}
-      #ouchn-ap-v2 .log .le[data-l="SUCCESS"]{color:#5A9E6F}
-      #ouchn-ap-v2 .log .le[data-l="DEBUG"]{color:#555}
-      #ouchn-ap-v2 .dbg-row{display:none;gap:6px;margin-bottom:10px}
+      #ouchn-ap-v2 .ctrls .pri{grid-column:span 2;border-color:#0a84ff;background:#0a84ff;color:#fff;font-size:12px}
+      #ouchn-ap-v2 .ctrls .pri:hover:not(:disabled){background:#409cff;border-color:#409cff;color:#fff}
+      #ouchn-ap-v2 .ctrls .dng{color:#ff6961}
+      #ouchn-ap-v2 .ctrls .dng:hover:not(:disabled){background:rgba(255,105,97,.15);border-color:rgba(255,105,97,.45);color:#ffb4ad}
+      #ouchn-ap-v2 .ctrls .muted{color:#d1d1d6}
+      #ouchn-ap-v2 .ctrls .debug-button{font-size:10px;color:#aeaeb2}
+      #ouchn-ap-v2 .ctrls button:focus-visible,#ouchn-ap-v2 .hdr .acts button:focus-visible,#ouchn-ap-v2 .dbg-row button:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
+      #ouchn-ap-v2 .st{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
+      #ouchn-ap-v2 .st span{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-height:32px;padding:7px 9px;border:1px solid rgba(255,255,255,.08);border-radius:9px;background:rgba(0,0,0,.16);color:#aeaeb2}
+      #ouchn-ap-v2 .st small{font-size:10px;letter-spacing:.02em}
+      #ouchn-ap-v2 .st b{font:600 13px/1 'SF Mono','Cascadia Code','Consolas',monospace;color:#f5f5f7}
+      #ouchn-ap-v2 .st .ok{color:#30d158}
+      #ouchn-ap-v2 .st .er{color:#ff6961}
+      #ouchn-ap-v2 .log-wrap{border:1px solid rgba(255,255,255,.1);border-radius:11px;overflow:hidden;background:rgba(0,0,0,.22)}
+      #ouchn-ap-v2 .log-head{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.06);font-size:10px;font-weight:600;letter-spacing:.04em;color:#d1d1d6}
+      #ouchn-ap-v2 .log-head span{font:9px/1 'SF Mono','Cascadia Code','Consolas',monospace;color:#8e8e93}
+      #ouchn-ap-v2 .log{max-height:260px;overflow-y:auto;padding:7px 10px;font:10px/1.65 'SF Mono','Cascadia Code','Consolas',monospace}
+      #ouchn-ap-v2 .log .le{padding:2px 0;border-bottom:1px solid rgba(255,255,255,.05);word-break:break-all;color:#d1d1d6}
+      #ouchn-ap-v2 .log .le[data-l="ERROR"]{color:#ff6961}
+      #ouchn-ap-v2 .log .le[data-l="WARN"]{color:#ffd60a}
+      #ouchn-ap-v2 .log .le[data-l="SUCCESS"]{color:#30d158}
+      #ouchn-ap-v2 .log .le[data-l="DEBUG"]{color:#8e8e93}
+      #ouchn-ap-v2 .dbg-row{display:none;gap:7px;margin-bottom:10px}
       #ouchn-ap-v2 .dbg-row.show{display:flex}
-      #ouchn-ap-v2 .dbg-row button{flex:1;padding:6px 8px;border:1px solid #4a4339;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;color:#b7aa99;background:#1a1814;transition:background .15s,border-color .15s,color .15s}
-      #ouchn-ap-v2 .dbg-row button:hover{background:#29231d;border-color:#a67a4b;color:#f4eee5}
-      #ouchn-ap-v2 .resize-handle{position:absolute;bottom:4px;right:4px;width:10px;height:10px;cursor:nwse-resize;border-right:2px solid #746756;border-bottom:2px solid #746756}
-      #ouchn-ap-v2 .resize-handle:hover{border-color:#e3a55c}
+      #ouchn-ap-v2 .dbg-row button{flex:1;padding:7px 9px;border:1px solid rgba(255,255,255,.1);border-radius:9px;cursor:pointer;font:600 10px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#d1d1d6;background:rgba(255,255,255,.08);transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .dbg-row button:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.18);color:#fff}
+      #ouchn-ap-v2 .dbg-row button:active{transform:scale(.97);transition-duration:.1s}
+      #ouchn-ap-v2 .resize-handle{position:absolute;bottom:5px;right:5px;width:10px;height:10px;cursor:nwse-resize;border-right:2px solid #8e8e93;border-bottom:2px solid #8e8e93}
+      #ouchn-ap-v2 .resize-handle:hover{border-color:#0a84ff}
       #ouchn-ap-v2.mini .body{display:none}
       #ouchn-ap-v2.mini{width:218px;min-width:218px;resize:none}
       @media (max-width:460px){#ouchn-ap-v2{right:8px;top:56px;width:calc(100vw - 16px);min-width:0}#ouchn-ap-v2 .body{padding:10px}#ouchn-ap-v2 .panel-title{font-size:17px}}
+      @media (prefers-reduced-motion:reduce){#ouchn-ap-v2 *,#ouchn-ap-v2 *::before,#ouchn-ap-v2 *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+      @media (prefers-reduced-transparency:reduce){#ouchn-ap-v2{background:#1c1c1e;backdrop-filter:none;-webkit-backdrop-filter:none}#ouchn-ap-v2 .hdr{background:#2c2c2e}}
+      @media (prefers-contrast:more){#ouchn-ap-v2{background:#1c1c1e;border-color:#fff}#ouchn-ap-v2 .live,#ouchn-ap-v2 .st span,#ouchn-ap-v2 .log-wrap{border-color:rgba(255,255,255,.38)}}
       `;
       const style = document.createElement('style');
       style.textContent = css;
@@ -1327,7 +1333,7 @@
       this.panel.innerHTML = `
         <div class="hdr">
           <div class="brand"><span class="eyebrow">学习自动化</span><span class="panel-title">自动刷课助手</span></div>
-          <div class="acts"><span class="version">v${CONFIG.VERSION}</span><button class="btn-tog" aria-label="折叠面板">-</button></div>
+          <div class="acts"><span class="version">v${CONFIG.VERSION}</span><button class="btn-tog" aria-label="折叠面板" aria-expanded="true">-</button></div>
         </div>
         <div class="body">
           <div class="live"><span class="dot off" id="adot"></span><div><span class="live-label">当前状态</span><strong id="astatus">待命</strong></div><span class="live-note">可拖动</span></div>
@@ -1336,11 +1342,11 @@
             <button id="bp" disabled>暂停</button>
             <button class="dng" id="bx" disabled>停止</button>
             <button class="muted" id="bcache">清缓存重置</button>
-            <button class="debug-button" id="bdbg">调试与更新</button>
+            <button class="debug-button" id="bdbg" aria-controls="dbgrow" aria-expanded="false">调试与更新</button>
           </div>
-          <div class="dbg-row" id="dbgrow">
+          <div class="dbg-row" id="dbgrow" role="region" aria-label="调试与更新选项">
             <button id="dbgupdate">检查最新发布版本</button>
-            <button id="dbglog">DEBUG：关闭</button>
+            <button id="dbglog" aria-pressed="false">DEBUG：关闭</button>
           </div>
           <div class="st" id="sb">
             <span><small>视频完成</small><b class="ok">0</b></span>
@@ -1364,6 +1370,7 @@
       this.panel.querySelector('#bdbg').addEventListener('click', () => {
         const row = this.panel.querySelector('#dbgrow');
         row.classList.toggle('show');
+        this.panel.querySelector('#bdbg').setAttribute('aria-expanded', String(row.classList.contains('show')));
       });
       this.panel.querySelector('#dbgupdate').addEventListener('click', () => this._checkUpdate());
       this.panel.querySelector('#dbglog').addEventListener('click', () => {
@@ -1371,7 +1378,14 @@
         logger.info(logger.debugEnabled ? 'DEBUG 日志已开启' : 'DEBUG 日志已关闭');
         this._ui();
       });
-      this.panel.querySelector('.btn-tog').addEventListener('click', () => { this.expanded = !this.expanded; this.panel.classList.toggle('mini', !this.expanded); this.panel.querySelector('.btn-tog').textContent = this.expanded ? '-' : '+'; });
+      this.panel.querySelector('.btn-tog').addEventListener('click', () => {
+        this.expanded = !this.expanded;
+        this.panel.classList.toggle('mini', !this.expanded);
+        const toggle = this.panel.querySelector('.btn-tog');
+        toggle.textContent = this.expanded ? '-' : '+';
+        toggle.setAttribute('aria-label', this.expanded ? '折叠面板' : '展开面板');
+        toggle.setAttribute('aria-expanded', String(this.expanded));
+      });
 
       this._makeDraggable();
       setInterval(() => this._ui(), 2000);
@@ -1399,6 +1413,7 @@
       this.panel.querySelector('#bx').disabled = !ap.running;
       this.panel.querySelector('#bp').textContent = paused ? '继续' : '暂停';
       this.panel.querySelector('#dbglog').textContent = logger.debugEnabled ? 'DEBUG：开启' : 'DEBUG：关闭';
+      this.panel.querySelector('#dbglog').setAttribute('aria-pressed', String(logger.debugEnabled));
 
       const dot = this.panel.querySelector('#adot');
       const st = this.panel.querySelector('#astatus');
