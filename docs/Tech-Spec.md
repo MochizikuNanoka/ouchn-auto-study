@@ -13,12 +13,14 @@
 - When `AnswerEnd` cards account for at least 80% of the answer cards and their count has not increased for 40 seconds, continue into the existing submit flow. Reset the 40-second timer whenever the completed-card count grows.
 - Expand only chapter-level collapse items during model construction; opening every task row would add avoidable delay.
 - When navigating to a target task, expand each collapsed ancestor collapse item from outermost to innermost before dispatching the task click.
+- `domIndex` 只能用于诊断，不能作为点击身份。任务必须以章节名、`.title` 的完整文本、视频/考试类型和章节内课程项序号重新解析；旧索引变化时记录重定位结果，找不到唯一目标时拒绝点击并走恢复流程。
 
 ## Cache Reset and Fresh Directory Scans
 
 - Add a control-panel reset action that removes only assistant keys with the `ouchn_autoplay_` prefix from local and session storage. It must never call `localStorage.clear()` or clear platform authentication state.
 - The reset action stops the current controller, clears its in-memory task model, then reloads the course-overview route with a unique scan token.
 - `_requestReload()` must persist only the current task pointer, statistics, retry metadata, and a fresh directory-scan token. It must route to `#/myCourse/study` with that token before reloading.
+- 任务断点额外保存 `chapterItemIndex`；恢复时优先比较章节、类型、完整标题和章节内序号。旧断点没有该字段时，标题不一致不得按旧 `pairIdx` 误续跑。
 - On recovery, discard all in-memory task arrays, require the matching scan token in the route, wait for stable DOM, then build a new model before matching the saved task pointer.
 - Keep the scan token out of the next ordinary checkpoint after a successful model rebuild so normal task progression remains compact.
 

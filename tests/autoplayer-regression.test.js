@@ -204,6 +204,26 @@ test('never resumes a checkpoint for a different course or a deliberately stoppe
   assert.equal(shouldAutoResume({ ...checkpoint, autoResume: false }, '3016'), false);
 });
 
+test('断点标题不一致时不按旧节次序号误续跑', () => {
+  const harness = createHarness();
+  const { StateManager } = harness.hooks;
+  const state = {
+    chapterIdx: 1,
+    pairIdx: 2,
+    itemType: 'video',
+    title: '3.1概述',
+    courseId: '3016',
+  };
+  const shiftedTask = {
+    chapterIdx: 1,
+    pairIdx: 2,
+    itemType: 'video',
+    title: '3.1概述（2）',
+  };
+
+  assert.equal(StateManager.isSameTask(state, shiftedTask, '3016'), false);
+});
+
 test('keeps retrying the same task beyond five refreshes', () => {
   const harness = createHarness();
   const makePlayer = () => {
@@ -520,6 +540,40 @@ test('opens collapsed task ancestors from outermost to innermost', async () => {
 
   harness.advance(400);
   assert.equal(await pending, 2);
+});
+
+test('索引漂移后按精确标题重新定位课程项', async () => {
+  const harness = createHarness();
+  const clicks = [];
+  const makeItem = title => {
+    const header = {
+      getAttribute() { return 'true'; },
+      textContent: title,
+      querySelector(selector) {
+        if (selector === '.title') return { textContent: title };
+        return null;
+      },
+    };
+    const target = { dispatchEvent() { clicks.push(title); } };
+    return {
+      parentElement: null,
+      querySelector(selector) {
+        if (selector === '.el-collapse-item__header') return header;
+        if (selector === '.el-collapse-item__wrap') return { textContent: '（00:10:00） 0%' };
+        if (selector === '.section') return target;
+        return null;
+      },
+      scrollIntoView() {},
+    };
+  };
+
+  harness.selectors.set('.el-collapse-item', [makeItem('正确课程'), makeItem('错误课程')]);
+  const pending = harness.hooks.CourseModel.navigateToDomIndex(1, '正确课程', 'video');
+  await flushPromises();
+  harness.advance(400);
+
+  assert.equal(await pending, true);
+  assert.deepEqual(clicks, ['正确课程']);
 });
 
 test('课程页含 500 时仍按稳定 DOM 扫描目录', async () => {

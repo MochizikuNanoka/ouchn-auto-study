@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.11-%230A84FF" alt="版本">
+  <img src="https://img.shields.io/badge/version-2.0.12-%230A84FF" alt="版本">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="脚本管理器">
   <img src="https://img.shields.io/badge/browser-Edge%20%7C%20Chrome-blue" alt="浏览器">
 </p>
@@ -57,17 +57,17 @@
 
 ## 技术原理
 
-### DOM 索引稳定定位
+### 多重锚点定位
 
-早期版本通过标题文本定位节次，但课程页面可能有多个同名视频或考试。当前版本在解析时记录 DOM 索引，并在回到课程页后按索引定位，减少同名节次漂移。
+平台会在返回课程页后重建 Vue 目录，单独依赖全局 DOM 索引会漂移。当前版本把 DOM 索引降为诊断信息，实际导航使用章节名、精确标题、视频/考试类型和章节内课程项序号共同定位；目录重排后会重新找到正确节次，而不是按旧位置误点。
 
 ```text
 CourseModel.buildModel()
   -> expandAllChapters()       展开章节级面板
   -> 遍历 .el-collapse-item    按页面内容区分视频与考试
-  -> 构建层级模型              章节 -> 节次对 -> 视频/考试
-  -> getPendingTasks()         展平为待处理任务，每项保留 DOM 索引
-  -> navigateToDomIndex()      按全局索引定位，不依赖标题文本
+  -> 构建层级模型              保留章节、精确标题、类型与章节内序号
+  -> getPendingTasks()         展平为待处理任务，同时保留旧索引用于诊断
+  -> navigateToDomIndex()      按多重锚点重新定位后再点击
 ```
 
 ### 刷新后的全新目录扫描
@@ -80,6 +80,7 @@ CourseModel.buildModel()
   "courseId": "3016",
   "chapterIdx": 0,
   "pairIdx": 2,
+  "chapterItemIndex": 4,
   "itemType": "exam",
   "title": "1.3 文件权限管理",
   "totalTasks": 49,
@@ -94,6 +95,7 @@ CourseModel.buildModel()
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| 2.0.12 | 2026-07-16 | 修复 Vue 目录重建后的任务定位漂移：改用章节、完整标题、类型和章节内序号多重锚定；断点标题不一致时拒绝误续跑。 |
 | 2.0.11 | 2026-07-13 | 控制面板升级为 Apple 风格深色玻璃材质；优化系统字体、系统语义色、按压反馈和无障碍偏好，并修复折叠按钮首次点击无效。 |
 | 2.0.10 | 2026-07-12 | 适配平台空白题：答题卡完成至少 80% 且 40 秒无新增完成题时，继续执行交卷。 |
 | 2.0.9 | 2026-07-12 | 美化控制面板；新增 DEBUG 日志开关，默认隐藏调试输出；整理项目文档和封面目录。 |

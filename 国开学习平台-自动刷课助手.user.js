@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.11
+// @version      2.0.12
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -14,7 +14,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.11',
+    VERSION: '2.0.12',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -266,6 +266,66 @@
       logger.debug('展开章节: ' + count);
     }
 
+    static getCourseItemInfo(item) {
+      const header = item?.querySelector('.el-collapse-item__header');
+      const body = item?.querySelector('.el-collapse-item__wrap');
+      const bodyText = body ? body.textContent.trim() : '';
+      const durationMatch = bodyText.match(/（(\d{2}:\d{2}:\d{2})）/);
+      const itemType = durationMatch ? 'video' : /^测验/.test(bodyText) ? 'exam' : '';
+      const titleElement = header?.querySelector('.title');
+      const title = titleElement ? titleElement.textContent.trim() : header ? header.textContent.trim() : '';
+      return { header, body, bodyText, durationMatch, itemType, title };
+    }
+
+    static getDirectoryTaskDescriptors(allItems = document.querySelectorAll('.el-collapse-item')) {
+      const descriptors = [];
+      let currentChapterName = '';
+      let chapterItemIndex = 0;
+
+      for (let index = 0; index < allItems.length; index++) {
+        const item = allItems[index];
+        const info = CourseModel.getCourseItemInfo(item);
+        if (!info.header) continue;
+        const chapterNameElement = info.header.querySelector('.chapter_name span');
+        if (chapterNameElement) {
+          currentChapterName = chapterNameElement.textContent.trim();
+          chapterItemIndex = 0;
+          continue;
+        }
+        if (!info.itemType || !info.title) continue;
+        descriptors.push({
+          item,
+          domIndex: index,
+          chapterName: currentChapterName,
+          chapterItemIndex: chapterItemIndex++,
+          itemType: info.itemType,
+          title: info.title,
+        });
+      }
+      return descriptors;
+    }
+
+    static resolveTaskItem(task, allItems = document.querySelectorAll('.el-collapse-item'), { logMove = false } = {}) {
+      if (!task?.title || !task?.itemType) return null;
+      const candidates = CourseModel.getDirectoryTaskDescriptors(allItems).filter(descriptor =>
+        descriptor.itemType === task.itemType &&
+        descriptor.title === task.title &&
+        (!task.chapterName || descriptor.chapterName === task.chapterName)
+      );
+      let target = Number.isInteger(task.chapterItemIndex)
+        ? candidates.find(descriptor => descriptor.chapterItemIndex === task.chapterItemIndex)
+        : null;
+      if (!target && candidates.length === 1) target = candidates[0];
+      if (!target) {
+        logger.warn(`无法唯一定位任务：${task.title}（候选 ${candidates.length} 项）`);
+        return null;
+      }
+      if (logMove && Number.isInteger(task.domIndex) && target.domIndex !== task.domIndex) {
+        logger.info(`目录索引已变化，按任务锚点重新定位：${task.domIndex} → ${target.domIndex}`);
+      }
+      return target;
+    }
+
     static async buildModel({ scanId = '' } = {}) {
       if (scanId && getDirectoryScanId() !== scanId) {
         logger.warn('目录扫描标识不匹配，拒绝使用当前页面目录');
@@ -295,25 +355,24 @@
       var currentChapter = null;
       for (var i = 0; i < allItems.length; i++) {
         var item = allItems[i];
-        var header = item.querySelector('.el-collapse-item__header');
+        var itemInfo = CourseModel.getCourseItemInfo(item);
+        var header = itemInfo.header;
         if (!header) continue;
         var chNameEl = header.querySelector('.chapter_name span');
         if (chNameEl) {
-          currentChapter = { name: chNameEl.textContent.trim(), chapterIdx: chapters.length, pairs: [] };
+          currentChapter = { name: chNameEl.textContent.trim(), chapterIdx: chapters.length, pairs: [], nextCourseItemIndex: 0 };
           chapters.push(currentChapter);
           continue;
         }
-        var body = item.querySelector('.el-collapse-item__wrap');
-        var btxt = body ? body.textContent.trim() : '';
-        var durMatch = btxt.match(/（(\d{2}:\d{2}:\d{2})）/);
+        var btxt = itemInfo.bodyText;
+        var durMatch = itemInfo.durationMatch;
         var progMatch = btxt.match(/(\d{1,3})%/);
-        var isVideo = !!durMatch;
-        var isExam = /^测验/.test(btxt);
+        var isVideo = itemInfo.itemType === 'video';
+        var isExam = itemInfo.itemType === 'exam';
         if (isVideo && currentChapter) {
           var progress = progMatch ? parseInt(progMatch[1]) : 0;
-          var vte = header.querySelector('.title span');
-          var vtitle = vte ? vte.textContent.trim() : header.textContent.trim().replace(/[\(（].*?[\)）]/g, '').trim();
-          var ve = { domIndex: i, title: vtitle, duration: durMatch ? durMatch[1] : '', progress: progress, isComplete: progress >= 100 };
+          var vtitle = itemInfo.title;
+          var ve = { domIndex: i, chapterItemIndex: currentChapter.nextCourseItemIndex++, title: vtitle, duration: durMatch ? durMatch[1] : '', progress: progress, isComplete: progress >= 100 };
           var existPair = null;
           for (var pi = 0; pi < currentChapter.pairs.length; pi++) {
             if (currentChapter.pairs[pi].video === null && currentChapter.pairs[pi].exam && currentChapter.pairs[pi].exam.title === vtitle) {
@@ -325,9 +384,8 @@
         } else if (isExam && currentChapter) {
           var stMatch = btxt.match(/章节测试[：:]\s*(.+)/);
           var status = stMatch ? stMatch[1].trim() : '未知';
-          var ete = header.querySelector('.title span');
-          var etitle = ete ? ete.textContent.trim() : header.textContent.trim().replace(/[\(（].*?[\)）]/g, '').trim();
-          var ee = { domIndex: i, title: etitle, status: status, isComplete: status === '合格' };
+          var etitle = itemInfo.title;
+          var ee = { domIndex: i, chapterItemIndex: currentChapter.nextCourseItemIndex++, title: etitle, status: status, isComplete: status === '合格' };
           var mpair = null;
           for (var mpi = 0; mpi < currentChapter.pairs.length; mpi++) {
             if (!currentChapter.pairs[mpi].exam && currentChapter.pairs[mpi].video && currentChapter.pairs[mpi].video.title === etitle) {
@@ -367,10 +425,10 @@
         for (var pj = 0; pj < ch.pairs.length; pj++) {
           var pair = ch.pairs[pj];
           if (pair.video && !pair.video.isComplete) {
-            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'video', title: pair.video.title, domIndex: pair.video.domIndex, progress: pair.video.progress });
+            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'video', title: pair.video.title, domIndex: pair.video.domIndex, chapterItemIndex: pair.video.chapterItemIndex, progress: pair.video.progress });
           }
           if (pair.exam && !pair.exam.isComplete) {
-            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'exam', title: pair.exam.title, domIndex: pair.exam.domIndex, status: pair.exam.status });
+            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'exam', title: pair.exam.title, domIndex: pair.exam.domIndex, chapterItemIndex: pair.exam.chapterItemIndex, status: pair.exam.status });
           }
         }
       }
@@ -396,33 +454,30 @@
       return count;
     }
 
-    static async navigateToDomIndex(domIndex, taskTitle, taskType) {
+    static async navigateToDomIndex(domIndex, taskTitle, taskType, chapterName = '', chapterItemIndex = -1) {
       // 从考试页或视频页回退后，Vue 可能尚未完成渲染，需要等待后重试。
       var allItems;
       for (let retry = 0; retry < 5; retry++) {
         allItems = document.querySelectorAll('.el-collapse-item');
-        if (allItems.length > 0 && domIndex < allItems.length) break;
+        if (allItems.length > 0) break;
         await sleep(1500);
       }
-      if (!allItems || domIndex >= allItems.length) {
-        logger.error('目录索引 ' + domIndex + ' 越界（当前共 ' + allItems.length + ' 项），页面可能尚未渲染完成');
+      if (!allItems || allItems.length === 0) {
+        logger.error('课程目录为空，页面可能尚未渲染完成');
         return false;
       }
-      var targetItem = allItems[domIndex];
-      var titleEl = targetItem.querySelector('.title span');
-      var actualTitle = titleEl ? titleEl.textContent.trim() : '';
-      if (taskTitle && actualTitle && actualTitle !== taskTitle) {
-        logger.warn('目录索引 ' + domIndex + ' 标题不匹配，拒绝误点："' + actualTitle + '"');
-        return false;
-      }
+      const task = { domIndex, title: taskTitle, itemType: taskType, chapterName, chapterItemIndex };
+      const target = CourseModel.resolveTaskItem(task, allItems, { logMove: true });
+      if (!target) return false;
+      var targetItem = target.item;
       const openedAncestors = await CourseModel.expandCollapsedAncestors(targetItem);
       if (openedAncestors > 0) logger.debug('按需展开父级目录：' + openedAncestors);
       targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(400);
       var ct = targetItem.querySelector('.section') || targetItem.querySelector('.content_main') || targetItem.querySelector('.el-collapse-item__header');
-      if (!ct) { logger.error('目录索引 ' + domIndex + '：找不到可点击元素'); return false; }
+      if (!ct) { logger.error('课程项 ' + target.domIndex + '：找不到可点击元素'); return false; }
       ct.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      logger.info('导航：[' + domIndex + '][' + getTaskTypeLabel(taskType) + '] ' + taskTitle);
+      logger.info('导航：[' + target.domIndex + '][' + getTaskTypeLabel(taskType) + '] ' + taskTitle);
       return true;
     }
   }
@@ -732,7 +787,12 @@
     static isSameTask(state, task, courseId) {
       if (!StateManager.hasTaskPointer(state) || !task) return false;
       if (!state.courseId || !courseId || String(state.courseId) !== String(courseId)) return false;
-      return state.chapterIdx === task.chapterIdx && state.pairIdx === task.pairIdx && state.itemType === task.itemType;
+      if (state.chapterIdx !== task.chapterIdx || state.itemType !== task.itemType) return false;
+      if (state.title && task.title && state.title !== task.title) return false;
+      if (Number.isInteger(state.chapterItemIndex) && Number.isInteger(task.chapterItemIndex)) {
+        return state.chapterItemIndex === task.chapterItemIndex;
+      }
+      return state.pairIdx === task.pairIdx;
     }
   }
 
@@ -963,7 +1023,7 @@
 
         // 二次确认：当前节次是否真的未完成
         if (isCoursePage()) {
-          var recheckItem = document.querySelectorAll('.el-collapse-item')[task.domIndex];
+          var recheckItem = CourseModel.resolveTaskItem(task)?.item;
           if (recheckItem) {
             const ll = recheckItem.querySelector('.loadingLinear');
             if (ll && parseFloat(ll.textContent) >= 100) {
@@ -1040,7 +1100,7 @@
       }
 
       if (!this._isActiveRun(runId)) return false;
-      const navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
+      const navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType, task.chapterName, task.chapterItemIndex);
       if (!navOk) {
         logger.warn('导航失败：[' + getTaskTypeLabel(task.itemType) + '] ' + task.title);
         return false;
@@ -1093,7 +1153,7 @@
             if (matchIndex < 0) logger.warn(`提示节次 "${hint}" 未在待处理列表中匹配到`);
           }
           if (attempt === 2) {
-            await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType);
+            await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType, task.chapterName, task.chapterItemIndex);
             logger.debug('重新触发点击...');
           }
           await sleep(2000);
@@ -1181,6 +1241,7 @@
         courseId,
         chapterIdx: task.chapterIdx,
         pairIdx: task.pairIdx,
+        chapterItemIndex: task.chapterItemIndex,
         itemType: task.itemType,
         title: task.title,
         totalTasks: this.tasks.length,

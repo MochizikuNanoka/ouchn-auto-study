@@ -20,7 +20,7 @@
 - DEBUG 日志默认关闭，只在“调试与更新”中显式开启；关闭时同时过滤助手面板和本脚本控制台输出。外部答题插件的控制台日志不受本脚本控制。
 - 项目规格文档放在 `docs/`，发布封面放在 `assets/`；根目录的 `log.txt` 是本地诊断样本，保持忽略且不发布。
 - 平台空白题适配：答题卡 `AnswerEnd` 完成比例至少 80% 且完成数量连续 40 秒未增加时，继续原有交卷流程；完成数增加必须重置计时，答题卡缺失仍走状态等待超时。
-- Task navigation must open collapsed ancestor course items from outermost to innermost before dispatching its task click. Do not expand every task row during model construction.
+- 任务导航必须先由章节名、`.title` 完整文本、视频/考试类型和章节内课程项序号重新定位；`domIndex` 仅用于诊断，不能作为点击身份。定位成功后从外到内展开折叠父级再点击，找不到唯一目标时拒绝误点。建模阶段不要展开每个课程项。
 - Cache reset must only remove assistant-owned `ouchn_autoplay_*` keys from local/session storage. Never call storage-wide clear methods because they may remove platform login or unrelated preferences.
 - Automatic F5 recovery persists a task pointer plus a unique directory-scan ID, reloads `#/myCourse/study` with that ID, and rebuilds the task list from stable DOM before matching the saved pointer. The full directory model is never persisted.
 - Recovery attempts are intentionally unlimited; exponential delay remains capped to avoid repeatedly hammering the platform.
