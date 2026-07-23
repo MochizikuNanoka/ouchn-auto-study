@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.15
+// @version      2.0.16
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -18,7 +18,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.15',
+    VERSION: '2.0.16',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -143,8 +143,9 @@
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET',
-        url: CONFIG.RELEASE_LATEST_URL,
+        url: `${CONFIG.RELEASE_LATEST_URL}?_=${Date.now()}`,
         anonymous: true,
+        nocache: true,
         timeout: 15000,
         onload: response => {
           if (response.status < 200 || response.status >= 300) {

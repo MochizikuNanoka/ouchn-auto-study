@@ -425,14 +425,15 @@ test('更新检查不依赖 GitHub REST API 匿名额度', () => {
 
 test('更新检查从最新正式 Release 跳转地址解析版本', async () => {
   const harness = createHarness({
-    gmResponseFinalUrl: 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/tag/v2.0.15',
+    gmResponseFinalUrl: 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/tag/v2.0.16',
   });
 
   const release = await harness.hooks.getLatestPublishedRelease();
-  assert.equal(release.tag, 'v2.0.15');
-  assert.equal(release.url, 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/tag/v2.0.15');
-  assert.equal(harness.requests[0].url, harness.hooks.CONFIG.RELEASE_LATEST_URL);
+  assert.equal(release.tag, 'v2.0.16');
+  assert.equal(release.url, 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/tag/v2.0.16');
+  assert.equal(harness.requests[0].url, `${harness.hooks.CONFIG.RELEASE_LATEST_URL}?_=0`);
   assert.equal(harness.requests[0].anonymous, true);
+  assert.equal(harness.requests[0].nocache, true);
 });
 
 test('Server酱³ 使用私有存储并按 SendKey 中的 UID 发送完成通知', async () => {

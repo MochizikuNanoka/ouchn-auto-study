@@ -37,7 +37,7 @@
 
 ## Update Check
 
-- Request `https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest` with `GM_xmlhttpRequest`; do not consume the unauthenticated GitHub REST API quota.
+- Request `https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest` with `GM_xmlhttpRequest`; add a timestamp query and `nocache` so a newly published release cannot be hidden by a stale CDN redirect.
 - Read the published release tag from Tampermonkey's redirect-aware `finalUrl`.
 - Compare the redirected tag with the local metadata version using a small numeric semantic-version comparator that accepts an optional leading `v`.
 - Open the release URL only when the remote version is strictly greater.
