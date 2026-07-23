@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.14-%230A84FF" alt="版本">
+  <img src="https://img.shields.io/badge/version-2.0.15-%230A84FF" alt="版本">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="脚本管理器">
   <img src="https://img.shields.io/badge/browser-Edge%20%7C%20Chrome-blue" alt="浏览器">
 </p>
@@ -99,6 +99,7 @@ CourseModel.buildModel()
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| 2.0.15 | 2026-07-23 | 更新检查改为读取 GitHub 最新正式 Release 跳转地址，避免匿名 REST API 额度耗尽后返回 HTTP 403。 |
 | 2.0.14 | 2026-07-23 | 新增 Server酱³完成通知和测试消息；优化控制面板外部入口、按钮尺寸与可复制日志；修复 GM 权限启用 Tampermonkey 沙箱后课程点击事件无法创建的问题。 |
 | 2.0.12 | 2026-07-16 | 修复 Vue 目录重建后的任务定位漂移：改用章节、完整标题、类型和章节内序号多重锚定；断点标题不一致时拒绝误续跑。 |
 | 2.0.11 | 2026-07-13 | 控制面板升级为 Apple 风格深色玻璃材质；优化系统字体、系统语义色、按压反馈和无障碍偏好，并修复折叠按钮首次点击无效。 |

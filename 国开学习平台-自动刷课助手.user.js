@@ -1,13 +1,14 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.14
+// @version      2.0.15
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @connect      github.com
 // @connect      push.ft07.com
 // @run-at       document-end
 // ==/UserScript==
@@ -17,7 +18,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.14',
+    VERSION: '2.0.15',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -29,7 +30,7 @@
     RETRY_DELAY_BASE: 2000,
     RETRY_DELAY_MAX: 30000,
     NAVIGATION_ATTEMPTS: 5,
-    RELEASE_API_URL: 'https://api.github.com/repos/MochizikuNanoka/ouchn-auto-study/releases/latest',
+    RELEASE_LATEST_URL: 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest',
     GITHUB_REPO_URL: 'https://github.com/MochizikuNanoka/ouchn-auto-study',
     BILIBILI_PROFILE_URL: 'https://space.bilibili.com/523746311',
     AIASK_URL: 'https://www.aiask.site/',
@@ -136,6 +137,32 @@
       if (leftParts[index] < rightParts[index]) return -1;
     }
     return 0;
+  }
+
+  function getLatestPublishedRelease() {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: CONFIG.RELEASE_LATEST_URL,
+        anonymous: true,
+        timeout: 15000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`HTTP ${response.status}`));
+            return;
+          }
+          const finalUrl = String(response.finalUrl || '');
+          const match = finalUrl.match(/\/releases\/tag\/([^/?#]+)/);
+          if (!match) {
+            reject(new Error('GitHub 最新 Release 地址无法识别'));
+            return;
+          }
+          resolve({ tag: decodeURIComponent(match[1]), url: finalUrl });
+        },
+        onerror: () => reject(new Error('网络请求失败或被脚本管理器拦截')),
+        ontimeout: () => reject(new Error('请求超时')),
+      });
+    });
   }
 
   // ======================== 完成通知 ========================
@@ -1649,13 +1676,8 @@
     async _checkUpdate() {
       logger.info('正在检查最新发布版本...');
       try {
-        const resp = await fetch(CONFIG.RELEASE_API_URL, {
-          cache: 'no-store',
-          headers: { Accept: 'application/vnd.github+json' },
-        });
-        if (!resp.ok) { logger.warn(`无法获取最新发布版本（HTTP ${resp.status}）`); return; }
-        const release = await resp.json();
-        const remoteTag = release.tag_name || release.name;
+        const release = await getLatestPublishedRelease();
+        const remoteTag = release.tag;
         const comparison = compareVersions(remoteTag, CONFIG.VERSION);
         if (comparison === null) {
           logger.warn(`最新发布版本标签无法识别："${remoteTag || '?'}"`);
@@ -1663,14 +1685,14 @@
         }
         if (comparison > 0) {
           logger.success(`发现新发布版本 ${remoteTag}（当前 v${CONFIG.VERSION}），正在打开发布页...`);
-          window.open(release.html_url || 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest', '_blank');
+          window.open(release.url, '_blank');
         } else if (comparison === 0) {
           logger.info(`当前已是最新发布版本 v${CONFIG.VERSION}`);
         } else {
           logger.info(`当前开发版本 v${CONFIG.VERSION} 高于最新发布版本 ${remoteTag}`);
         }
       } catch (e) {
-        logger.warn(`检查更新失败: ${e.message}`);
+        logger.warn(`检查更新失败：${e.message}`);
       }
     }
 

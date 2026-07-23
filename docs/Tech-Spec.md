@@ -37,9 +37,9 @@
 
 ## Update Check
 
-- Fetch `https://api.github.com/repos/MochizikuNanoka/ouchn-auto-study/releases/latest`.
-- Ignore draft/prerelease data by relying on the latest published endpoint.
-- Compare `tag_name` with the local metadata version using a small numeric semantic-version comparator that accepts an optional leading `v`.
+- Request `https://github.com/MochizikuNanoka/ouchn-auto-study/releases/latest` with `GM_xmlhttpRequest`; do not consume the unauthenticated GitHub REST API quota.
+- Read the published release tag from Tampermonkey's redirect-aware `finalUrl`.
+- Compare the redirected tag with the local metadata version using a small numeric semantic-version comparator that accepts an optional leading `v`.
 - Open the release URL only when the remote version is strictly greater.
 
 ## Verification

@@ -12,6 +12,7 @@ function createHarness({
   session = new Map(),
   gmStorage = new Map(),
   gmResponseStatus = 200,
+  gmResponseFinalUrl = '',
   strictMouseEvent = false,
 } = {}) {
   let now = 0;
@@ -115,7 +116,7 @@ function createHarness({
     },
     GM_xmlhttpRequest(options) {
       requests.push(options);
-      options.onload({ status: gmResponseStatus, responseText: '' });
+      options.onload({ status: gmResponseStatus, responseText: '', finalUrl: gmResponseFinalUrl });
     },
     history: { back() {} },
     location,
@@ -137,7 +138,7 @@ function createHarness({
   assert.notEqual(instrumented, source, 'ControlPanel test replacement point is missing');
   instrumented = instrumented.replace(
     initMarker,
-    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, ServerChanNotifier, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
+    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, ServerChanNotifier, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, getLatestPublishedRelease, init, shouldAutoResume };\n\n" + initMarker,
   );
   vm.runInNewContext(instrumented, context, { filename: scriptPath });
 
@@ -411,6 +412,27 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('v2.0.2', '2.0.2'), 0);
   assert.equal(compareVersions('v2.0.10', '2.0.3'), 1);
   assert.equal(compareVersions('invalid', '2.0.3'), null);
+});
+
+test('更新检查不依赖 GitHub REST API 匿名额度', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.match(source, /^\/\/ @connect\s+github\.com$/m);
+  assert.match(source, /RELEASE_LATEST_URL: 'https:\/\/github\.com\/MochizikuNanoka\/ouchn-auto-study\/releases\/latest'/);
+  assert.match(source, /response\.finalUrl/);
+  assert.doesNotMatch(source, /api\.github\.com\/repos\/MochizikuNanoka\/ouchn-auto-study\/releases\/latest/);
+});
+
+test('更新检查从最新正式 Release 跳转地址解析版本', async () => {
+  const harness = createHarness({
+    gmResponseFinalUrl: 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/tag/v2.0.15',
+  });
+
+  const release = await harness.hooks.getLatestPublishedRelease();
+  assert.equal(release.tag, 'v2.0.15');
+  assert.equal(release.url, 'https://github.com/MochizikuNanoka/ouchn-auto-study/releases/tag/v2.0.15');
+  assert.equal(harness.requests[0].url, harness.hooks.CONFIG.RELEASE_LATEST_URL);
+  assert.equal(harness.requests[0].anonymous, true);
 });
 
 test('Server酱³ 使用私有存储并按 SendKey 中的 UID 发送完成通知', async () => {
