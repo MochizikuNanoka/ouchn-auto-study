@@ -51,3 +51,13 @@ git diff --check
 ```
 
 Live Edge verification focuses on: normal directory expansion in the presence of diagnostic logs, slow/failed directory recovery, F5 continuation, and update-panel behavior against the actual latest Release.
+
+## Server酱³完成通知
+
+- Add `GM_getValue`, `GM_setValue`, and `GM_xmlhttpRequest` grants plus the Tampermonkey-compatible `push.ft07.com` connection permission; the parent domain permission covers UID subdomains.
+- Because GM grants move the userscript into Tampermonkey's sandbox, dispatched page `MouseEvent` objects must not include the sandbox `window` as `view`; `bubbles` and `cancelable` are sufficient for Vue navigation.
+- Store the SendKey only in Tampermonkey private storage under `serverchan3_sendkey`.
+- Accept Server酱³ keys matching `^sctp(\d+)t`; extract the UID and POST URL-encoded `title` and `desp` fields to `https://<uid>.push.ft07.com/send/<sendkey>.send`.
+- Trigger notification only from `_finishNormally()`. Guard it per run so repeated completion calls cannot duplicate the message.
+- Reuse the same request path for a user-triggered test message; save the current input before sending.
+- A missing/invalid key or network error must not block normal task cleanup and must never expose the SendKey in logs.

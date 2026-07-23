@@ -6,13 +6,21 @@ const vm = require('node:vm');
 
 const scriptPath = path.join(__dirname, '..', '国开学习平台-自动刷课助手.user.js');
 
-function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(), session = new Map() } = {}) {
+function createHarness({
+  hash = '#/myCourse/study?id=3016',
+  storage = new Map(),
+  session = new Map(),
+  gmStorage = new Map(),
+  gmResponseStatus = 200,
+  strictMouseEvent = false,
+} = {}) {
   let now = 0;
   let nextTimerId = 1;
   let reloads = 0;
   const timers = new Map();
   const selectors = new Map();
   const logs = [];
+  const requests = [];
 
   const schedule = (callback, delay, repeat = false) => {
     const id = nextTimerId++;
@@ -78,7 +86,15 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
     Date: FakeDate,
     JSON,
     Math,
-    MouseEvent: class MouseEvent {},
+    MouseEvent: class MouseEvent {
+      constructor(type, init = {}) {
+        if (strictMouseEvent && Object.prototype.hasOwnProperty.call(init, 'view')) {
+          throw new TypeError("Failed to convert value to 'Window'");
+        }
+        this.type = type;
+        this.init = init;
+      }
+    },
     Promise,
     URLSearchParams,
     clearInterval: clearTimer,
@@ -91,6 +107,16 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
     },
     document,
     getComputedStyle: () => ({ display: 'none' }),
+    GM_getValue(key, fallback) {
+      return gmStorage.has(key) ? gmStorage.get(key) : fallback;
+    },
+    GM_setValue(key, value) {
+      gmStorage.set(key, value);
+    },
+    GM_xmlhttpRequest(options) {
+      requests.push(options);
+      options.onload({ status: gmResponseStatus, responseText: '' });
+    },
     history: { back() {} },
     location,
     localStorage: createStorage(storage),
@@ -111,7 +137,7 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
   assert.notEqual(instrumented, source, 'ControlPanel test replacement point is missing');
   instrumented = instrumented.replace(
     initMarker,
-    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
+    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, ServerChanNotifier, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, init, shouldAutoResume };\n\n" + initMarker,
   );
   vm.runInNewContext(instrumented, context, { filename: scriptPath });
 
@@ -119,8 +145,10 @@ function createHarness({ hash = '#/myCourse/study?id=3016', storage = new Map(),
     advance,
     context,
     get reloads() { return reloads; },
+    gmStorage,
     hooks: context.__AUTOPLAYER_TEST_HOOKS__,
     logs,
+    requests,
     selectors,
     session,
     storage,
@@ -385,6 +413,139 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('invalid', '2.0.3'), null);
 });
 
+test('Server酱³ 使用私有存储并按 SendKey 中的 UID 发送完成通知', async () => {
+  const sendKey = 'sctp12345tabc_DEF-789';
+  const gmStorage = new Map([['serverchan3_sendkey', ` ${sendKey} `]]);
+  const harness = createHarness({ gmStorage });
+  const sent = await harness.hooks.ServerChanNotifier.sendTaskCompleted(
+    { videos: 3, exams: 2, errors: 1 },
+    '3016',
+  );
+
+  assert.equal(sent, true);
+  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests[0].url, `https://12345.push.ft07.com/send/${sendKey}.send`);
+  const body = new URLSearchParams(harness.requests[0].data);
+  assert.equal(body.get('title'), '国开学习任务已完成');
+  assert.match(body.get('desp'), /课程 ID：3016/);
+  assert.match(body.get('desp'), /视频完成：3/);
+  assert.equal(harness.logs.some(entry => entry.message.includes(sendKey)), false);
+});
+
+test('Server酱³ 可以发送独立测试消息', async () => {
+  const harness = createHarness({
+    gmStorage: new Map([['serverchan3_sendkey', 'sctp12345tabc']]),
+  });
+
+  assert.equal(await harness.hooks.ServerChanNotifier.sendTest(), true);
+  const body = new URLSearchParams(harness.requests[0].data);
+  assert.equal(body.get('title'), '国开学习助手测试消息');
+  assert.equal(body.get('desp'), 'Server酱³消息通知配置正常。');
+});
+
+test('Server酱³ 设置位于主操作区，清缓存重置位于调试区', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+  const serverChanButtonIndex = source.indexOf('id="bserverchan"');
+  const serverChanPanelIndex = source.indexOf('id="serverchanrow"');
+  const debugRowIndex = source.indexOf('id="dbgrow"');
+  const cacheButtonIndex = source.indexOf('id="bcache"');
+
+  assert.ok(serverChanButtonIndex >= 0);
+  assert.ok(serverChanPanelIndex > serverChanButtonIndex);
+  assert.ok(debugRowIndex > serverChanPanelIndex);
+  assert.ok(cacheButtonIndex > debugRowIndex);
+  assert.match(source, /id="serverchankey" type="password"/);
+  assert.match(source, /id="serverchantest">发送测试消息/);
+  assert.match(source, /https:\/\/doc\.sc3\.ft07\.com\/zh\/serverchan3/);
+  assert.match(source, /@grant\s+GM_getValue/);
+  assert.match(source, /@grant\s+GM_xmlhttpRequest/);
+  assert.match(source, /^\/\/ @connect\s+push\.ft07\.com$/m);
+});
+
+test('控制面板按钮增高并移除指定的 INFO 文案', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.match(source, /\.ctrls button\{min-height:38px/);
+  assert.match(source, /\.dbg-row button\{flex:1;min-height:36px/);
+  assert.doesNotMatch(source, /不使用刷新前的目录数据/);
+  assert.doesNotMatch(source, /在课程总览页点击「开始学习」/);
+});
+
+test('控制面板提供前置工具、项目主页和作者入口', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+  const brandIndex = source.indexOf('class="brand"');
+  const headerLinkIndex = source.indexOf('class="aiask-button"');
+  const actionsIndex = source.indexOf('class="acts"');
+  const panelTitleIndex = source.indexOf('class="panel-title"');
+  const logIndex = source.indexOf('class="log-wrap"');
+  const footerIndex = source.indexOf('class="panel-footer"');
+  const signatureIndex = source.indexOf('class="signature"');
+
+  assert.ok(headerLinkIndex > brandIndex);
+  assert.ok(headerLinkIndex > panelTitleIndex);
+  assert.ok(headerLinkIndex < actionsIndex);
+  assert.ok(footerIndex > logIndex);
+  assert.ok(signatureIndex > footerIndex);
+  assert.match(source, /AIASK_URL: 'https:\/\/www\.aiask\.site\/'/);
+  assert.match(source, /GITHUB_REPO_URL: 'https:\/\/github\.com\/MochizikuNanoka\/ouchn-auto-study'/);
+  assert.doesNotMatch(source, /GITHUB_REPO_URL: '[^']*\/releases/);
+  assert.match(source, /BILIBILI_PROFILE_URL: 'https:\/\/space\.bilibili\.com\/523746311'/);
+  assert.match(source, /class="signature">@镜桦izumik<\/span>/);
+  assert.match(source, /class="aiask-button"[^>]+target="_blank" rel="noopener noreferrer"/);
+  assert.match(source, /\.footer-links a\{[^}]*width:34px;height:34px;[^}]*border-radius:50%/);
+  assert.match(source, /aria-label="GitHub 项目主页"[^>]*><svg/);
+  assert.match(source, /aria-label="Bilibili 作者主页"[^>]*><svg/);
+  assert.doesNotMatch(source, /aria-label="GitHub 项目主页"[^>]*>GitHub<\/a>/);
+  assert.doesNotMatch(source, /aria-label="Bilibili 作者主页"[^>]*>Bilibili<\/a>/);
+  assert.match(source, /\.log\{[^}]*user-select:text/);
+  assert.match(source, /e\.target\.closest\('button, a'\)/);
+});
+
+test('初始化完成后提示确认安装爱问答助手', async () => {
+  const harness = createHarness();
+
+  await harness.hooks.init();
+  const messages = harness.hooks.logger.getRecent(300).map(entry => entry.msg);
+  const completedIndex = messages.lastIndexOf('初始化完成');
+  const reminderIndex = messages.lastIndexOf('请确认安装爱问答助手');
+
+  assert.ok(completedIndex >= 0);
+  assert.equal(reminderIndex, completedIndex + 1);
+});
+
+test('未配置或格式无效的 SendKey 时不发送 Server酱³ 请求', async () => {
+  const emptyHarness = createHarness();
+  assert.equal(await emptyHarness.hooks.ServerChanNotifier.sendTaskCompleted({}, '3016'), false);
+  assert.equal(emptyHarness.requests.length, 0);
+
+  const invalidHarness = createHarness({
+    gmStorage: new Map([['serverchan3_sendkey', 'invalid-key']]),
+  });
+  assert.equal(await invalidHarness.hooks.ServerChanNotifier.sendTaskCompleted({}, '3016'), false);
+  assert.equal(invalidHarness.requests.length, 0);
+
+  const failedHarness = createHarness({
+    gmStorage: new Map([['serverchan3_sendkey', 'sctp12345tabc']]),
+    gmResponseStatus: 500,
+  });
+  assert.equal(await failedHarness.hooks.ServerChanNotifier.sendTaskCompleted({}, '3016'), false);
+  assert.equal(failedHarness.requests.length, 1);
+});
+
+test('同一次正常完成只发送一次 Server酱³ 通知', async () => {
+  const harness = createHarness({
+    gmStorage: new Map([['serverchan3_sendkey', 'sctp12345tabc']]),
+  });
+  const player = new harness.hooks.AutoPlayer();
+  player.courseId = '3016';
+
+  player._finishNormally();
+  player._finishNormally();
+  await flushPromises();
+
+  assert.equal(harness.requests.length, 1);
+});
+
 test('DEBUG 日志默认关闭，用户可显式切换', () => {
   const harness = createHarness();
   const { logger } = harness.hooks;
@@ -543,7 +704,7 @@ test('opens collapsed task ancestors from outermost to innermost', async () => {
 });
 
 test('索引漂移后按精确标题重新定位课程项', async () => {
-  const harness = createHarness();
+  const harness = createHarness({ strictMouseEvent: true });
   const clicks = [];
   const makeItem = title => {
     const header = {

@@ -1,11 +1,14 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.12
+// @version      2.0.14
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      push.ft07.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -14,7 +17,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.12',
+    VERSION: '2.0.14',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -27,6 +30,11 @@
     RETRY_DELAY_MAX: 30000,
     NAVIGATION_ATTEMPTS: 5,
     RELEASE_API_URL: 'https://api.github.com/repos/MochizikuNanoka/ouchn-auto-study/releases/latest',
+    GITHUB_REPO_URL: 'https://github.com/MochizikuNanoka/ouchn-auto-study',
+    BILIBILI_PROFILE_URL: 'https://space.bilibili.com/523746311',
+    AIASK_URL: 'https://www.aiask.site/',
+    SERVERCHAN_DOC_URL: 'https://doc.sc3.ft07.com/zh/serverchan3',
+    SERVERCHAN_SENDKEY_STORAGE_KEY: 'serverchan3_sendkey',
     VIDEO_POST_COMPLETE_DELAY: 10000,
     DIRECTORY_SCAN_QUERY: '_apScan',
     CACHE_RESET_RELOAD_DELAY: 300,
@@ -128,6 +136,84 @@
       if (leftParts[index] < rightParts[index]) return -1;
     }
     return 0;
+  }
+
+  // ======================== 完成通知 ========================
+  class ServerChanNotifier {
+    static getSendKey() {
+      return String(GM_getValue(CONFIG.SERVERCHAN_SENDKEY_STORAGE_KEY, '') || '').trim();
+    }
+
+    static setSendKey(sendKey) {
+      GM_setValue(CONFIG.SERVERCHAN_SENDKEY_STORAGE_KEY, String(sendKey || '').trim());
+    }
+
+    static getEndpoint(sendKey) {
+      const key = String(sendKey || '').trim();
+      const match = key.match(/^sctp(\d+)t/i);
+      if (!match || /\s/.test(key)) return null;
+      return `https://${match[1]}.push.ft07.com/send/${encodeURIComponent(key)}.send`;
+    }
+
+    static async send(title, desp, successMessage) {
+      const sendKey = ServerChanNotifier.getSendKey();
+      if (!sendKey) return false;
+
+      const endpoint = ServerChanNotifier.getEndpoint(sendKey);
+      if (!endpoint) {
+        logger.warn('Server酱³ SendKey 格式无效，未发送消息');
+        return false;
+      }
+
+      const body = new URLSearchParams({
+        title,
+        desp,
+      }).toString();
+
+      try {
+        await new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: 'POST',
+            url: endpoint,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            data: body,
+            timeout: 15000,
+            onload: response => {
+              if (response.status >= 200 && response.status < 300) resolve();
+              else reject(new Error(`HTTP ${response.status}`));
+            },
+            onerror: () => reject(new Error('网络请求失败或被脚本管理器拦截')),
+            ontimeout: () => reject(new Error('请求超时')),
+          });
+        });
+        logger.success(successMessage);
+        return true;
+      } catch (error) {
+        logger.warn(`Server酱³ 消息发送失败：${error.message}`);
+        return false;
+      }
+    }
+
+    static sendTaskCompleted(stats, courseId) {
+      return ServerChanNotifier.send(
+        '国开学习任务已完成',
+        [
+          `课程 ID：${courseId || '未知'}`,
+          `视频完成：${stats.videos || 0}`,
+          `考试完成：${stats.exams || 0}`,
+          `异常次数：${stats.errors || 0}`,
+        ].join('\n'),
+        'Server酱³ 完成通知已发送',
+      );
+    }
+
+    static sendTest() {
+      return ServerChanNotifier.send(
+        '国开学习助手测试消息',
+        'Server酱³消息通知配置正常。',
+        'Server酱³ 测试消息已发送',
+      );
+    }
   }
 
   function isCoursePage() {
@@ -331,7 +417,7 @@
         logger.warn('目录扫描标识不匹配，拒绝使用当前页面目录');
         return null;
       }
-      if (scanId) logger.info('正在重新扫描课程目录，不使用刷新前的目录数据');
+      if (scanId) logger.info('正在重新扫描课程目录');
       const initialSnapshot = await CourseModel.waitForStableDirectory();
       if (!initialSnapshot) return null;
       if (scanId && getDirectoryScanId() !== scanId) {
@@ -476,7 +562,7 @@
       await sleep(400);
       var ct = targetItem.querySelector('.section') || targetItem.querySelector('.content_main') || targetItem.querySelector('.el-collapse-item__header');
       if (!ct) { logger.error('课程项 ' + target.domIndex + '：找不到可点击元素'); return false; }
-      ct.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      ct.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       logger.info('导航：[' + target.domIndex + '][' + getTaskTypeLabel(taskType) + '] ' + taskTitle);
       return true;
     }
@@ -823,6 +909,7 @@
       this._runId = 0;
       this._reloadTimer = null;
       this._loopRunId = 0;
+      this._completionNotificationSent = false;
     }
 
     restoreState() {
@@ -868,6 +955,7 @@
       this.running = true;
       this.paused = false;
       this._reloading = false;
+      this._completionNotificationSent = false;
       const runId = ++this._runId;
 
       if (forceFreshDirectory) {
@@ -1310,6 +1398,10 @@
       logger.info('\n========================================');
       logger.success('全部完成！');
       logger.info(`视频：${this.stats.videos} | 考试：${this.stats.exams} | 错误：${this.stats.errors}`);
+      if (!this._completionNotificationSent) {
+        this._completionNotificationSent = true;
+        void ServerChanNotifier.sendTaskCompleted(this.stats, this.courseId);
+      }
     }
   }
 
@@ -1326,13 +1418,16 @@
     _build() {
       const css = `
       #ouchn-ap-v2{position:fixed;top:72px;right:16px;z-index:99999;width:440px;min-width:320px;max-width:800px;resize:both;overflow:hidden;color-scheme:dark;background:rgba(28,28,30,.82);border:1px solid rgba(255,255,255,.14);border-radius:16px;box-shadow:0 24px 56px rgba(0,0,0,.32),0 1px 0 rgba(255,255,255,.12) inset;backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);font:13px/1.5 -apple-system,BlinkMacSystemFont,'SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif;color:#f5f5f7;user-select:none;text-wrap:pretty}
-      #ouchn-ap-v2 .hdr{display:flex;align-items:center;justify-content:space-between;min-height:54px;padding:12px 15px;background:rgba(44,44,46,.52);border-bottom:1px solid rgba(255,255,255,.1);cursor:move}
-      #ouchn-ap-v2 .brand{display:grid;gap:2px}
+      #ouchn-ap-v2 .hdr{display:flex;align-items:center;gap:10px;min-height:54px;padding:12px 15px;background:rgba(44,44,46,.52);border-bottom:1px solid rgba(255,255,255,.1);cursor:move}
+      #ouchn-ap-v2 .brand{display:grid;flex:none;gap:2px}
       #ouchn-ap-v2 .eyebrow{font-size:10px;font-weight:700;letter-spacing:.08em;color:#98989d}
       #ouchn-ap-v2 .panel-title{font:600 17px/1.15 -apple-system,BlinkMacSystemFont,'SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:-.01em;color:#fff}
+      #ouchn-ap-v2 .aiask-button{display:inline-flex;align-items:center;justify-content:center;min-height:30px;margin-right:auto;padding:0 11px;border:1px solid rgba(100,168,255,.35);border-radius:9px;background:rgba(10,132,255,.12);font:600 10px/1 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#64a8ff;text-decoration:none;white-space:nowrap;cursor:pointer;transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .aiask-button:hover{background:rgba(10,132,255,.2);border-color:rgba(100,168,255,.55);color:#9ac7ff;transform:translateY(-1px)}
+      #ouchn-ap-v2 .aiask-button:active{transform:scale(.97);transition-duration:.1s}
       #ouchn-ap-v2 .acts{display:flex;align-items:center;gap:9px}
       #ouchn-ap-v2 .version{font:10px/1 'SF Mono','Cascadia Code','Consolas',monospace;color:#98989d}
-      #ouchn-ap-v2 .hdr .acts button{width:28px;height:28px;border:1px solid rgba(255,255,255,.12);border-radius:50%;background:rgba(255,255,255,.08);color:#d1d1d6;cursor:pointer;font-size:17px;line-height:1;transition:background .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .hdr .acts button{width:30px;height:30px;border:1px solid rgba(255,255,255,.12);border-radius:50%;background:rgba(255,255,255,.08);color:#d1d1d6;cursor:pointer;font-size:17px;line-height:1;transition:background .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
       #ouchn-ap-v2 .hdr .acts button:hover{background:rgba(255,255,255,.16);color:#fff}
       #ouchn-ap-v2 .hdr .acts button:active{transform:scale(.94);transition-duration:.1s}
       #ouchn-ap-v2 .body{padding:12px 14px 14px}
@@ -1345,7 +1440,7 @@
       #ouchn-ap-v2 .live-note{font-size:10px;color:#98989d}
       @keyframes ap-status-pulse{0%,100%{opacity:1}50%{opacity:.58}}
       #ouchn-ap-v2 .ctrls{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
-      #ouchn-ap-v2 .ctrls button{min-height:34px;padding:7px 9px;border:1px solid rgba(255,255,255,.1);border-radius:9px;cursor:pointer;font:600 11px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:.01em;color:#f5f5f7;background:rgba(255,255,255,.1);transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .ctrls button{min-height:38px;padding:9px 10px;border:1px solid rgba(255,255,255,.1);border-radius:9px;cursor:pointer;font:600 11px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;letter-spacing:.01em;color:#f5f5f7;background:rgba(255,255,255,.1);transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
       #ouchn-ap-v2 .ctrls button:hover:not(:disabled){background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.18);transform:translateY(-1px)}
       #ouchn-ap-v2 .ctrls button:active:not(:disabled){transform:scale(.97);transition-duration:.1s}
       #ouchn-ap-v2 .ctrls button:disabled{opacity:.38;cursor:not-allowed}
@@ -1353,9 +1448,10 @@
       #ouchn-ap-v2 .ctrls .pri:hover:not(:disabled){background:#409cff;border-color:#409cff;color:#fff}
       #ouchn-ap-v2 .ctrls .dng{color:#ff6961}
       #ouchn-ap-v2 .ctrls .dng:hover:not(:disabled){background:rgba(255,105,97,.15);border-color:rgba(255,105,97,.45);color:#ffb4ad}
-      #ouchn-ap-v2 .ctrls .muted{color:#d1d1d6}
+      #ouchn-ap-v2 .muted{color:#d1d1d6}
+      #ouchn-ap-v2 .ctrls .notify-button{color:#64a8ff}
       #ouchn-ap-v2 .ctrls .debug-button{font-size:10px;color:#aeaeb2}
-      #ouchn-ap-v2 .ctrls button:focus-visible,#ouchn-ap-v2 .hdr .acts button:focus-visible,#ouchn-ap-v2 .dbg-row button:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
+      #ouchn-ap-v2 .ctrls button:focus-visible,#ouchn-ap-v2 .hdr .acts button:focus-visible,#ouchn-ap-v2 .aiask-button:focus-visible,#ouchn-ap-v2 .dbg-row button:focus-visible,#ouchn-ap-v2 .serverchan-row input:focus-visible,#ouchn-ap-v2 .serverchan-row a:focus-visible,#ouchn-ap-v2 .serverchan-row button:focus-visible,#ouchn-ap-v2 .footer-links a:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
       #ouchn-ap-v2 .st{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
       #ouchn-ap-v2 .st span{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-height:32px;padding:7px 9px;border:1px solid rgba(255,255,255,.08);border-radius:9px;background:rgba(0,0,0,.16);color:#aeaeb2}
       #ouchn-ap-v2 .st small{font-size:10px;letter-spacing:.02em}
@@ -1365,22 +1461,41 @@
       #ouchn-ap-v2 .log-wrap{border:1px solid rgba(255,255,255,.1);border-radius:11px;overflow:hidden;background:rgba(0,0,0,.22)}
       #ouchn-ap-v2 .log-head{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.06);font-size:10px;font-weight:600;letter-spacing:.04em;color:#d1d1d6}
       #ouchn-ap-v2 .log-head span{font:9px/1 'SF Mono','Cascadia Code','Consolas',monospace;color:#8e8e93}
-      #ouchn-ap-v2 .log{max-height:260px;overflow-y:auto;padding:7px 10px;font:10px/1.65 'SF Mono','Cascadia Code','Consolas',monospace}
+      #ouchn-ap-v2 .log{max-height:260px;overflow-y:auto;padding:7px 10px;font:10px/1.65 'SF Mono','Cascadia Code','Consolas',monospace;user-select:text}
       #ouchn-ap-v2 .log .le{padding:2px 0;border-bottom:1px solid rgba(255,255,255,.05);word-break:break-all;color:#d1d1d6}
       #ouchn-ap-v2 .log .le[data-l="ERROR"]{color:#ff6961}
       #ouchn-ap-v2 .log .le[data-l="WARN"]{color:#ffd60a}
       #ouchn-ap-v2 .log .le[data-l="SUCCESS"]{color:#30d158}
       #ouchn-ap-v2 .log .le[data-l="DEBUG"]{color:#8e8e93}
+      #ouchn-ap-v2 .panel-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+      #ouchn-ap-v2 .footer-links{display:flex;align-items:center;gap:7px}
+      #ouchn-ap-v2 .footer-links a{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border:1px solid rgba(255,255,255,.1);border-radius:50%;background:rgba(255,255,255,.08);color:#d1d1d6;text-decoration:none;transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .footer-links svg{width:16px;height:16px;fill:currentColor}
+      #ouchn-ap-v2 .footer-links a:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.18);color:#fff;transform:translateY(-1px)}
+      #ouchn-ap-v2 .footer-links a:active{transform:scale(.97);transition-duration:.1s}
+      #ouchn-ap-v2 .signature{font-size:10px;color:#8e8e93;white-space:nowrap}
       #ouchn-ap-v2 .dbg-row{display:none;gap:7px;margin-bottom:10px}
       #ouchn-ap-v2 .dbg-row.show{display:flex}
-      #ouchn-ap-v2 .dbg-row button{flex:1;padding:7px 9px;border:1px solid rgba(255,255,255,.1);border-radius:9px;cursor:pointer;font:600 10px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#d1d1d6;background:rgba(255,255,255,.08);transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .dbg-row button{flex:1;min-height:36px;padding:9px 9px;border:1px solid rgba(255,255,255,.1);border-radius:9px;cursor:pointer;font:600 10px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#d1d1d6;background:rgba(255,255,255,.08);transition:background .2s ease,border-color .2s ease,color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
       #ouchn-ap-v2 .dbg-row button:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.18);color:#fff}
       #ouchn-ap-v2 .dbg-row button:active{transform:scale(.97);transition-duration:.1s}
+      #ouchn-ap-v2 .serverchan-row{display:none;grid-template-columns:1fr auto;align-items:center;gap:7px;margin:-3px 0 10px;padding:9px;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(0,0,0,.16)}
+      #ouchn-ap-v2 .serverchan-row.show{display:grid}
+      #ouchn-ap-v2 .serverchan-row label{grid-column:1/-1;font-size:10px;font-weight:600;letter-spacing:.03em;color:#d1d1d6}
+      #ouchn-ap-v2 .serverchan-row input{min-width:0;height:32px;padding:0 9px;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.08);font:11px/1 'SF Mono','Cascadia Code','Consolas',monospace;color:#f5f5f7;user-select:text}
+      #ouchn-ap-v2 .serverchan-row input::placeholder{color:#636366}
+      #ouchn-ap-v2 .serverchan-row a{font-size:10px;color:#64a8ff;text-decoration:none;white-space:nowrap}
+      #ouchn-ap-v2 .serverchan-row a:hover{text-decoration:underline}
+      #ouchn-ap-v2 .serverchan-row button{grid-column:1/-1;min-height:36px;padding:9px;border:1px solid rgba(100,168,255,.35);border-radius:9px;cursor:pointer;font:600 10px/1.2 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#64a8ff;background:rgba(10,132,255,.12);transition:background .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1)}
+      #ouchn-ap-v2 .serverchan-row button:hover:not(:disabled){background:rgba(10,132,255,.2);border-color:rgba(100,168,255,.55)}
+      #ouchn-ap-v2 .serverchan-row button:active:not(:disabled){transform:scale(.98);transition-duration:.1s}
+      #ouchn-ap-v2 .serverchan-row button:disabled{opacity:.5;cursor:wait}
       #ouchn-ap-v2 .resize-handle{position:absolute;bottom:5px;right:5px;width:10px;height:10px;cursor:nwse-resize;border-right:2px solid #8e8e93;border-bottom:2px solid #8e8e93}
       #ouchn-ap-v2 .resize-handle:hover{border-color:#0a84ff}
       #ouchn-ap-v2.mini .body{display:none}
       #ouchn-ap-v2.mini{width:218px;min-width:218px;resize:none}
-      @media (max-width:460px){#ouchn-ap-v2{right:8px;top:56px;width:calc(100vw - 16px);min-width:0}#ouchn-ap-v2 .body{padding:10px}#ouchn-ap-v2 .panel-title{font-size:17px}}
+      @media (max-width:460px){#ouchn-ap-v2{right:8px;top:56px;width:calc(100vw - 16px);min-width:0}#ouchn-ap-v2 .hdr{gap:8px;padding-right:11px;padding-left:11px}#ouchn-ap-v2 .body{padding:10px}#ouchn-ap-v2 .panel-title{font-size:17px}#ouchn-ap-v2 .aiask-button{padding:0 8px;font-size:9px}}
+      @media (max-width:360px){#ouchn-ap-v2 .version{display:none}}
       @media (prefers-reduced-motion:reduce){#ouchn-ap-v2 *,#ouchn-ap-v2 *::before,#ouchn-ap-v2 *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
       @media (prefers-reduced-transparency:reduce){#ouchn-ap-v2{background:#1c1c1e;backdrop-filter:none;-webkit-backdrop-filter:none}#ouchn-ap-v2 .hdr{background:#2c2c2e}}
       @media (prefers-contrast:more){#ouchn-ap-v2{background:#1c1c1e;border-color:#fff}#ouchn-ap-v2 .live,#ouchn-ap-v2 .st span,#ouchn-ap-v2 .log-wrap{border-color:rgba(255,255,255,.38)}}
@@ -1393,7 +1508,11 @@
       this.panel.id = 'ouchn-ap-v2';
       this.panel.innerHTML = `
         <div class="hdr">
-          <div class="brand"><span class="eyebrow">学习自动化</span><span class="panel-title">自动刷课助手</span></div>
+          <div class="brand">
+            <span class="eyebrow">学习自动化</span>
+            <span class="panel-title">自动刷课助手</span>
+          </div>
+          <a class="aiask-button" href="${CONFIG.AIASK_URL}" target="_blank" rel="noopener noreferrer">爱问答助手</a>
           <div class="acts"><span class="version">v${CONFIG.VERSION}</span><button class="btn-tog" aria-label="折叠面板" aria-expanded="true">-</button></div>
         </div>
         <div class="body">
@@ -1402,12 +1521,19 @@
             <button class="pri" id="bs">开始学习</button>
             <button id="bp" disabled>暂停</button>
             <button class="dng" id="bx" disabled>停止</button>
-            <button class="muted" id="bcache">清缓存重置</button>
+            <button class="notify-button" id="bserverchan" aria-controls="serverchanrow" aria-expanded="false">Server酱³消息通知</button>
             <button class="debug-button" id="bdbg" aria-controls="dbgrow" aria-expanded="false">调试与更新</button>
+          </div>
+          <div class="serverchan-row" id="serverchanrow" role="region" aria-label="Server酱³消息通知设置">
+            <label for="serverchankey">SendKey（留空则不发送）</label>
+            <input id="serverchankey" type="password" autocomplete="off" spellcheck="false" placeholder="sctp...">
+            <a href="${CONFIG.SERVERCHAN_DOC_URL}" target="_blank" rel="noopener noreferrer">使用文档</a>
+            <button id="serverchantest">发送测试消息</button>
           </div>
           <div class="dbg-row" id="dbgrow" role="region" aria-label="调试与更新选项">
             <button id="dbgupdate">检查最新发布版本</button>
             <button id="dbglog" aria-pressed="false">DEBUG：关闭</button>
+            <button class="muted" id="bcache">清缓存重置</button>
           </div>
           <div class="st" id="sb">
             <span><small>视频完成</small><b class="ok">0</b></span>
@@ -1415,7 +1541,14 @@
             <span><small>异常次数</small><b class="er">0</b></span>
             <span><small>当前进度</small><b>0/0</b></span>
           </div>
-          <div class="log-wrap"><div class="log-head">运行记录 <span>实时</span></div><div class="log" id="la"><div class="le" data-l="INFO">[INFO] 在课程总览页点击「开始学习」</div></div></div>
+          <div class="log-wrap"><div class="log-head">运行记录 <span>实时</span></div><div class="log" id="la"></div></div>
+          <div class="panel-footer">
+            <div class="footer-links">
+              <a href="${CONFIG.GITHUB_REPO_URL}" target="_blank" rel="noopener noreferrer" aria-label="GitHub 项目主页" title="GitHub 项目主页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.61-3.37-1.18-3.37-1.18-.45-1.17-1.11-1.48-1.11-1.48-.91-.63.07-.62.07-.62 1 .08 1.53 1.05 1.53 1.05.9 1.55 2.35 1.1 2.92.84.09-.66.35-1.1.64-1.36-2.22-.26-4.56-1.13-4.56-5A3.94 3.94 0 0 1 6.69 8.6a3.7 3.7 0 0 1 .1-2.75s.84-.27 2.75 1.05a9.37 9.37 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05a3.7 3.7 0 0 1 .1 2.75 3.94 3.94 0 0 1 1.05 2.74c0 3.89-2.34 4.74-4.57 5 .36.32.68.94.68 1.9V21c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg></a>
+              <a href="${CONFIG.BILIBILI_PROFILE_URL}" target="_blank" rel="noopener noreferrer" aria-label="Bilibili 作者主页" title="Bilibili 作者主页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.7 2.8a1 1 0 0 0-1.4 1.4L9.1 6H6a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V9a3 3 0 0 0-3-3h-3.1l1.8-1.8a1 1 0 0 0-1.4-1.4L12 6.1 8.7 2.8ZM6 8h12a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Zm2.5 3a1 1 0 0 0-1 1v2a1 1 0 1 0 2 0v-2a1 1 0 0 0-1-1Zm7 0a1 1 0 0 0-1 1v2a1 1 0 1 0 2 0v-2a1 1 0 0 0-1-1Z"/></svg></a>
+            </div>
+            <span class="signature">@镜桦izumik</span>
+          </div>
           <div class="resize-handle"></div>
         </div>`;
       document.body.appendChild(this.panel);
@@ -1431,13 +1564,37 @@
       this.panel.querySelector('#bdbg').addEventListener('click', () => {
         const row = this.panel.querySelector('#dbgrow');
         row.classList.toggle('show');
-        this.panel.querySelector('#bdbg').setAttribute('aria-expanded', String(row.classList.contains('show')));
+        const isOpen = row.classList.contains('show');
+        this.panel.querySelector('#bdbg').setAttribute('aria-expanded', String(isOpen));
       });
       this.panel.querySelector('#dbgupdate').addEventListener('click', () => this._checkUpdate());
       this.panel.querySelector('#dbglog').addEventListener('click', () => {
         logger.setDebugEnabled(!logger.debugEnabled);
         logger.info(logger.debugEnabled ? 'DEBUG 日志已开启' : 'DEBUG 日志已关闭');
         this._ui();
+      });
+      const sendKeyInput = this.panel.querySelector('#serverchankey');
+      sendKeyInput.value = ServerChanNotifier.getSendKey();
+      sendKeyInput.addEventListener('change', () => {
+        ServerChanNotifier.setSendKey(sendKeyInput.value);
+        logger.info(sendKeyInput.value.trim() ? 'Server酱³ SendKey 已保存' : 'Server酱³ 完成通知已关闭');
+      });
+      this.panel.querySelector('#bserverchan').addEventListener('click', () => {
+        const row = this.panel.querySelector('#serverchanrow');
+        row.classList.toggle('show');
+        this.panel.querySelector('#bserverchan').setAttribute('aria-expanded', String(row.classList.contains('show')));
+        if (row.classList.contains('show')) sendKeyInput.focus();
+      });
+      this.panel.querySelector('#serverchantest').addEventListener('click', async event => {
+        ServerChanNotifier.setSendKey(sendKeyInput.value);
+        if (!sendKeyInput.value.trim()) {
+          logger.warn('请先填写 Server酱³ SendKey');
+          return;
+        }
+        const button = event.currentTarget;
+        button.disabled = true;
+        await ServerChanNotifier.sendTest();
+        button.disabled = false;
       });
       this.panel.querySelector('.btn-tog').addEventListener('click', () => {
         this.expanded = !this.expanded;
@@ -1521,7 +1678,7 @@
       const hdr = this.panel.querySelector('.hdr');
       let d = false, sx, sy, ix, iy;
       hdr.addEventListener('mousedown', e => {
-        if (e.target.tagName === 'BUTTON') return;
+        if (e.target.closest('button, a')) return;
         d = true; sx = e.clientX; sy = e.clientY;
         const r = this.panel.getBoundingClientRect();
         ix = r.left; iy = r.top;
@@ -1564,6 +1721,7 @@
     }
 
     logger.success('初始化完成');
+    logger.info('请确认安装爱问答助手');
   }
 
   if (document.readyState === 'loading') {

@@ -17,6 +17,7 @@
 - 答题卡状态一旦出现，即使答题插件尚未完成也持续等待，不按五分钟完成超时刷新；只有整个等待窗口始终未读取到答题卡状态时才恢复刷新。
 - 题目状态首次出现时只记录一次 `[INFO]`，不得在轮询中重复输出 WARN。
 - 控制面板采用克制的 Apple 深色材质方向：半透明深色面板、系统字体和系统语义色；蓝色用于主操作，绿色、黄色、红色分别表达成功、警告、错误。状态、操作、统计和日志保持分区，避免霓虹、渐变和装饰性图标；尊重减少动态效果、减少透明度和提高对比度偏好。
+- 控制面板标题与版本之间保留爱问答助手按钮；运行记录支持框选复制，初始化完成后提示确认安装爱问答助手。运行记录下方保留 GitHub、Bilibili 圆形纯图标和 `@镜桦izumik` 署名。外部导航仅使用隔离的新标签页链接，不耦合自动学习业务。
 - DEBUG 日志默认关闭，只在“调试与更新”中显式开启；关闭时同时过滤助手面板和本脚本控制台输出。外部答题插件的控制台日志不受本脚本控制。
 - 项目规格文档放在 `docs/`，发布封面放在 `assets/`；根目录的 `log.txt` 是本地诊断样本，保持忽略且不发布。
 - 平台空白题适配：答题卡 `AnswerEnd` 完成比例至少 80% 且完成数量连续 40 秒未增加时，继续原有交卷流程；完成数增加必须重置计时，答题卡缺失仍走状态等待超时。
@@ -25,6 +26,9 @@
 - Automatic F5 recovery persists a task pointer plus a unique directory-scan ID, reloads `#/myCourse/study` with that ID, and rebuilds the task list from stable DOM before matching the saved pointer. The full directory model is never persisted.
 - Recovery attempts are intentionally unlimited; exponential delay remains capped to avoid repeatedly hammering the platform.
 - Update checking is based on the latest published GitHub Release tag and numeric version comparison, never branch-file inequality.
+- Optional Server酱³ completion notifications store the SendKey in Tampermonkey private storage, derive the API UID from the key, and send only from the normal completion boundary. Never log or persist the key in page storage. Keep the notification entry in the main action area with a test-message action; keep the less-frequent cache reset under “调试与更新”.
+- Tampermonkey `@connect` must use the parent domain `push.ft07.com`; do not use `*.push.ft07.com`. Tampermonkey automatically grants its UID subdomains from the parent-domain entry.
+- Adding any GM grant moves this userscript into Tampermonkey's sandbox. Do not pass the sandbox `window` as `MouseEventInit.view`; omit `view` so page navigation events remain valid across the sandbox boundary.
 
 ## Verification Baseline
 

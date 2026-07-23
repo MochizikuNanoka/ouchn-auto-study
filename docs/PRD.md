@@ -31,3 +31,18 @@
 - The userscript runs with `@grant none`; it cannot safely append to a local `log.txt` at runtime. `log.txt` is a diagnostic artifact for development; runtime evidence remains in the injected panel and browser console.
 - Live browser testing may require an existing authenticated Edge session. Login, CAPTCHA, and credentials stay user-operated.
 - Removing the retry cap can cause long-lived recovery loops during an outage; the delay remains exponentially backed off and capped per attempt.
+
+## v2.0.14 Server酱³完成通知
+
+### Goal
+
+用户可从主操作区配置 Server酱³ SendKey 并发送测试消息；全部学习任务正常完成时，收到一条包含课程 ID、视频完成数、考试完成数和异常次数的手机通知。
+
+### Acceptance Criteria
+
+1. Server酱³入口位于主操作区，设置区域包含密码型 SendKey 输入框、测试消息按钮和官方使用文档链接；清缓存重置移入“调试与更新”。
+2. SendKey 使用 Tampermonkey 私有存储，不写入页面 `localStorage`、日志、仓库或项目记忆。
+3. 留空或格式无效时不发请求；有效 SendKey 按官方规则提取 UID 并发送表单编码的 POST 请求。
+4. 一次正常完成流程最多发送一条通知；发送失败只记录不含 SendKey 的警告，不阻塞完成收尾。
+5. 控制面板操作按钮的最小高度不低于 36px，提升点击面积但不改变现有视觉语言。
+6. 启用 GM 权限后的 Tampermonkey 沙箱不得影响课程目录解析、任务点击、视频和考试处理等原有功能。
