@@ -446,14 +446,14 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('invalid', '2.0.3'), null);
 });
 
-test('v2.0.17 发布版本在元数据、运行时配置和 README 中保持一致', () => {
+test('v2.1.0 发布版本在元数据、运行时配置和 README 中保持一致', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 
-  assert.match(source, /^\/\/ @version\s+2\.0\.17$/m);
-  assert.match(source, /VERSION: '2\.0\.17'/);
-  assert.match(readme, /badge\/version-2\.0\.17-/);
-  assert.match(readme, /^\| 2\.0\.17 \| 2026-08-21 \|/m);
+  assert.match(source, /^\/\/ @version\s+2\.1\.0$/m);
+  assert.match(source, /VERSION: '2\.1\.0'/);
+  assert.match(readme, /badge\/version-2\.1\.0-/);
+  assert.match(readme, /^\| 2\.1\.0 \| 2026-08-21 \|/m);
 });
 
 test('平台顺序提示保留节次标题中的空白与完整正文', () => {

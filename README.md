@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.17-%230A84FF" alt="版本">
+  <img src="https://img.shields.io/badge/version-2.1.0-%230A84FF" alt="版本">
   <img src="https://img.shields.io/badge/platform-Tampermonkey-%23000" alt="脚本管理器">
   <img src="https://img.shields.io/badge/browser-Edge%20%7C%20Chrome-blue" alt="浏览器">
 </p>
@@ -99,7 +99,7 @@ CourseModel.buildModel()
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
-| 2.0.17 | 2026-08-21 | 修复课程目录误完成、跨课程恢复、暂停/停止仍继续操作、考试未成功即推进及前置节次无法纠错；强化 Server酱³结果校验与凭据保护；新增可关闭更新提醒并修复折叠后无法展开。 |
+| 2.1.0 | 2026-08-21 | 修复课程目录误完成、跨课程恢复、暂停/停止仍继续操作、考试未成功即推进及前置节次无法纠错；强化 Server酱³结果校验与凭据保护；新增可关闭更新提醒并修复折叠后无法展开。 |
 | 2.0.16 | 2026-07-23 | 更新检查请求增加无缓存参数，避免 GitHub CDN 在新版本刚发布时仍返回旧 Release 跳转。 |
 | 2.0.15 | 2026-07-23 | 更新检查改为读取 GitHub 最新正式 Release 跳转地址，避免匿名 REST API 额度耗尽后返回 HTTP 403。 |
 | 2.0.14 | 2026-07-23 | 新增 Server酱³完成通知和测试消息；优化控制面板外部入口、按钮尺寸与可复制日志；修复 GM 权限启用 Tampermonkey 沙箱后课程点击事件无法创建的问题。 |
