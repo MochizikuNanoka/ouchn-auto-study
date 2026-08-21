@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.0.16
+// @version      2.0.17
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -18,7 +18,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.0.16',
+    VERSION: '2.0.17',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -36,6 +36,8 @@
     AIASK_URL: 'https://www.aiask.site/',
     SERVERCHAN_DOC_URL: 'https://doc.sc3.ft07.com/zh/serverchan3',
     SERVERCHAN_SENDKEY_STORAGE_KEY: 'serverchan3_sendkey',
+    SERVERCHAN_MAX_ATTEMPTS: 3,
+    SERVERCHAN_RETRY_DELAY_BASE: 2000,
     VIDEO_POST_COMPLETE_DELAY: 10000,
     DIRECTORY_SCAN_QUERY: '_apScan',
     CACHE_RESET_RELOAD_DELAY: 300,
@@ -78,9 +80,10 @@
   // ======================== 工具函数 ========================
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  async function waitForElement(selector, timeout = CONFIG.NAVIGATION_TIMEOUT) {
+  async function waitForElement(selector, timeout = CONFIG.NAVIGATION_TIMEOUT, shouldContinue = () => true) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
+      if (!shouldContinue()) return null;
       const el = document.querySelector(selector);
       if (el) return el;
       await sleep(500);
@@ -88,9 +91,10 @@
     return null;
   }
 
-  async function waitForElements(selector, minCount = 1, timeout = CONFIG.NAVIGATION_TIMEOUT) {
+  async function waitForElements(selector, minCount = 1, timeout = CONFIG.NAVIGATION_TIMEOUT, shouldContinue = () => true) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
+      if (!shouldContinue()) return [];
       const els = document.querySelectorAll(selector);
       if (els.length >= minCount) return [...els];
       await sleep(500);
@@ -207,8 +211,22 @@
             data: body,
             timeout: 15000,
             onload: response => {
-              if (response.status >= 200 && response.status < 300) resolve();
-              else reject(new Error(`HTTP ${response.status}`));
+              if (response.status < 200 || response.status >= 300) {
+                reject(new Error(`HTTP ${response.status}`));
+                return;
+              }
+              let payload;
+              try {
+                payload = JSON.parse(String(response.responseText || ''));
+              } catch {
+                reject(new Error('响应格式无效'));
+                return;
+              }
+              if (Number(payload?.code) !== 0) {
+                reject(new Error(`业务状态码 ${payload?.code ?? '未知'}`));
+                return;
+              }
+              resolve(payload);
             },
             onerror: () => reject(new Error('网络请求失败或被脚本管理器拦截')),
             ontimeout: () => reject(new Error('请求超时')),
@@ -222,17 +240,30 @@
       }
     }
 
-    static sendTaskCompleted(stats, courseId) {
-      return ServerChanNotifier.send(
-        '国开学习任务已完成',
-        [
-          `课程 ID：${courseId || '未知'}`,
-          `视频完成：${stats.videos || 0}`,
-          `考试完成：${stats.exams || 0}`,
-          `异常次数：${stats.errors || 0}`,
-        ].join('\n'),
-        'Server酱³ 完成通知已发送',
-      );
+    static async sendTaskCompleted(stats, courseId, {
+      maxAttempts = CONFIG.SERVERCHAN_MAX_ATTEMPTS,
+      retryDelayBase = CONFIG.SERVERCHAN_RETRY_DELAY_BASE,
+    } = {}) {
+      const title = '国开学习任务已完成';
+      const desp = [
+        `课程 ID：${courseId || '未知'}`,
+        `视频完成：${stats.videos || 0}`,
+        `考试完成：${stats.exams || 0}`,
+        `异常次数：${stats.errors || 0}`,
+      ].join('\n');
+      const sendKey = ServerChanNotifier.getSendKey();
+      const canRetry = !!ServerChanNotifier.getEndpoint(sendKey);
+      const attempts = canRetry ? Math.max(1, Number(maxAttempts) || 1) : 1;
+
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (await ServerChanNotifier.send(title, desp, 'Server酱³ 完成通知已发送')) return true;
+        if (attempt < attempts) {
+          const delay = retryDelayBase * Math.pow(2, attempt - 1);
+          logger.info(`Server酱³ 完成通知将在 ${Math.ceil(delay / 1000)} 秒后重试（${attempt + 1}/${attempts}）`);
+          await sleep(delay);
+        }
+      }
+      return false;
     }
 
     static sendTest() {
@@ -256,27 +287,52 @@
     return !!document.querySelector('.examQuestion') || window.location.hash.includes('examQuestion');
   }
 
-  // 检测平台弹窗提示"请先完成X.X"，提取应先完成的节次标题
+  function normalizeTaskTitle(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+      .replace(/\s+/g, '')
+      .replace(/^["'“”‘’「」『』【】]+|["'“”‘’「」『』【】]+$/g, '')
+      .replace(/[，。!！]+$/g, '')
+      .toLowerCase();
+  }
+
+  function cleanOrderHint(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+(?:确定|知道了|关闭|取消)\s*$/, '')
+      .replace(/[，。!！]+\s*$/, '')
+      .trim()
+      .replace(/^["'“‘「『【]+\s*/, '')
+      .replace(/\s*["'”’」』】]+$/, '')
+      .replace(/(?:的课程|章节|节次|部分)\s*$/, '')
+      .trim();
+  }
+
+  function isOrderHintTitleMatch(hint, title) {
+    const hintKey = normalizeTaskTitle(hint);
+    const titleKey = normalizeTaskTitle(title);
+    if (!hintKey || !titleKey) return false;
+    if (hintKey === titleKey) return true;
+    if (Math.min(hintKey.length, titleKey.length) < 4) return false;
+    return hintKey.includes(titleKey) || titleKey.includes(hintKey);
+  }
+
+  // 检测平台弹窗提示"请先完成X.X"，提取应先完成的完整节次标题。
   function detectOrderHint() {
     // 可能的弹窗选择器：.el-message-box、.el-dialog、.el-notification、.el-alert。
     const dialogEls = document.querySelectorAll('.el-message-box, .el-dialog, .el-notification, .el-alert, .el-message');
     for (const el of dialogEls) {
-      const text = el.textContent || '';
-      // 匹配 "请先完成"、"请先学习"、"先完成" 等模式
-      const m = text.match(/(?:请先(?:完成|学习|通过)|先(?:完成|学习)|应先(?:完成|学习))[：:]*\s*(.+?)(?:[，。!！\s]|$)/);
-      if (m) {
-        let target = m[1].trim();
-        // 规范化：去掉"的课程""章节""节次"等后缀
-        target = target.replace(/(?:的课程|章节|节次|部分)\s*$/, '');
-        return target;
-      }
-      // 直接匹配 "请先完成" 后面的内容（更宽松的模式）
-      const m2 = text.match(/请先完成[：:]*\s*(.+?)(?:[，。!！\s]|$)/);
-      if (m2) {
-        let target = m2[1].trim();
-        target = target.replace(/(?:的课程|章节|节次|部分)\s*$/, '');
-        return target;
-      }
+      const content = el.querySelector?.(
+        '.el-message-box__message, .el-dialog__body, .el-notification__content, .el-alert__description, .el-message__content',
+      );
+      const text = String(content?.textContent || el.textContent || '');
+      const match = text.match(/(?:请先(?:完成|学习|通过)|先(?:完成|学习)|应先(?:完成|学习))[：:\s]*(.+)$/);
+      if (!match) continue;
+      const target = cleanOrderHint(match[1]);
+      if (target) return target;
     }
     return null;
   }
@@ -289,13 +345,23 @@
       const allItems = document.querySelectorAll('.el-collapse-item');
       const headers = document.querySelectorAll('.el-collapse-item__header');
       const chapterCount = [...headers].filter(header => !!header.querySelector('.chapter_name')).length;
+      const loadingCount = [...document.querySelectorAll('.el-loading-mask, .el-skeleton')].filter(element => {
+        const style = getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+      }).length;
+      const recoveryState = StateManager.load();
+      const retryAt = Number(recoveryState?.retryAt);
       return {
         route: window.location.hash,
         courseId: getCourseIdFromHash(),
         allItemCount: allItems.length,
         chapterCount,
         courseItemCount: document.querySelectorAll('.hoverItem').length,
-        loadingCount: document.querySelectorAll('.el-loading-mask, .el-skeleton').length,
+        parseableTaskCount: CourseModel.getDirectoryTaskDescriptors(allItems).length,
+        loadingCount,
+        retryCount: Number(recoveryState?.retryCount) || 0,
+        retryAt: Number.isFinite(retryAt) ? retryAt : null,
+        lastReloadReason: String(recoveryState?.lastReloadReason || ''),
       };
     }
 
@@ -311,23 +377,28 @@
         'wait-populated-timeout': '等待课程项超时',
         'empty-after-stable-ready': '稳定后目录为空',
         'no-chapters-after-parse': '解析后未找到章节',
+        'no-tasks-after-parse': '解析后未找到可用任务',
       };
       const summary = `路由=${snapshot.route || '/'} 课程=${snapshot.courseId || '?'} ` +
         `折叠项=${snapshot.allItemCount} 章节=${snapshot.chapterCount} ` +
-        `课程项=${snapshot.courseItemCount} 加载层=${snapshot.loadingCount}`;
+        `课程项=${snapshot.courseItemCount} 可解析任务=${snapshot.parseableTaskCount} ` +
+        `加载层=${snapshot.loadingCount} 重试=${snapshot.retryCount || 0}` +
+        `${snapshot.lastReloadReason ? ` 原因=${snapshot.lastReloadReason}` : ''}`;
       logger[level](`[课程目录] ${stageNames[stage] || '目录状态'}：${summary}`, snapshot);
     }
 
     static isDirectorySnapshotReady(snapshot, requireCourseItems) {
       if (!isCoursePage()) return false;
       if (snapshot.allItemCount === 0 || snapshot.chapterCount === 0) return false;
-      return !requireCourseItems || snapshot.courseItemCount > 0;
+      if (snapshot.loadingCount > 0) return false;
+      return !requireCourseItems || (snapshot.courseItemCount > 0 && snapshot.parseableTaskCount > 0);
     }
 
     static async waitForStableDirectory({
       requireCourseItems = false,
       timeout = CONFIG.COURSE_DIRECTORY_TIMEOUT,
       stableMs = CONFIG.COURSE_DIRECTORY_STABLE_MS,
+      shouldContinue = () => true,
     } = {}) {
       const startedAt = Date.now();
       let stableSince = 0;
@@ -336,10 +407,11 @@
       CourseModel.logDirectorySnapshot(requireCourseItems ? 'wait-populated-start' : 'wait-start', CourseModel.getDirectorySnapshot());
 
       while (Date.now() - startedAt < timeout) {
+        if (!shouldContinue()) return null;
         const snapshot = CourseModel.getDirectorySnapshot();
         const ready = CourseModel.isDirectorySnapshotReady(snapshot, requireCourseItems);
         const signature = [snapshot.route, snapshot.allItemCount, snapshot.chapterCount,
-          snapshot.courseItemCount, snapshot.loadingCount].join('|');
+          snapshot.courseItemCount, snapshot.parseableTaskCount, snapshot.loadingCount].join('|');
 
         if (!ready) {
           if (signature !== lastDiagnostic) {
@@ -365,10 +437,11 @@
       return null;
     }
 
-    static async expandAllChapters() {
+    static async expandAllChapters(shouldContinue = () => true) {
       const allItems = document.querySelectorAll('.el-collapse-item');
       let count = 0;
       for (const item of allItems) {
+        if (!shouldContinue()) return count;
         const header = item.querySelector('.el-collapse-item__header');
         if (!header) continue;
         if (!header.querySelector('.chapter_name')) continue;
@@ -383,11 +456,11 @@
     static getCourseItemInfo(item) {
       const header = item?.querySelector('.el-collapse-item__header');
       const body = item?.querySelector('.el-collapse-item__wrap');
-      const bodyText = body ? body.textContent.trim() : '';
+      const bodyText = String(body?.textContent || '').trim();
       const durationMatch = bodyText.match(/（(\d{2}:\d{2}:\d{2})）/);
       const itemType = durationMatch ? 'video' : /^测验/.test(bodyText) ? 'exam' : '';
       const titleElement = header?.querySelector('.title');
-      const title = titleElement ? titleElement.textContent.trim() : header ? header.textContent.trim() : '';
+      const title = String(titleElement?.textContent || header?.textContent || '').trim();
       return { header, body, bodyText, durationMatch, itemType, title };
     }
 
@@ -440,21 +513,25 @@
       return target;
     }
 
-    static async buildModel({ scanId = '' } = {}) {
+    static async buildModel({ scanId = '', shouldContinue = () => true } = {}) {
+      if (!shouldContinue()) return null;
       if (scanId && getDirectoryScanId() !== scanId) {
         logger.warn('目录扫描标识不匹配，拒绝使用当前页面目录');
         return null;
       }
       if (scanId) logger.info('正在重新扫描课程目录');
-      const initialSnapshot = await CourseModel.waitForStableDirectory();
+      const initialSnapshot = await CourseModel.waitForStableDirectory({ shouldContinue });
       if (!initialSnapshot) return null;
+      if (!shouldContinue()) return null;
       if (scanId && getDirectoryScanId() !== scanId) {
         logger.warn('目录扫描期间页面已变化，放弃当前目录');
         return null;
       }
-      await CourseModel.expandAllChapters();
-      const populatedSnapshot = await CourseModel.waitForStableDirectory({ requireCourseItems: true });
+      await CourseModel.expandAllChapters(shouldContinue);
+      if (!shouldContinue()) return null;
+      const populatedSnapshot = await CourseModel.waitForStableDirectory({ requireCourseItems: true, shouldContinue });
       if (!populatedSnapshot) return null;
+      if (!shouldContinue()) return null;
       if (scanId && getDirectoryScanId() !== scanId) {
         logger.warn('目录扫描期间页面已变化，放弃当前目录');
         return null;
@@ -528,28 +605,38 @@
           if (chapters[ci].pairs[pj].exam) { te++; if (chapters[ci].pairs[pj].exam.isComplete) de++; }
         }
       }
+      if (tv + te === 0) {
+        CourseModel.logDirectorySnapshot('no-tasks-after-parse', CourseModel.getDirectorySnapshot(), 'warn');
+        return null;
+      }
       logger.info('课程模型：' + chapters.length + ' 个章节，' + tv + ' 个视频，' + te + ' 个考试（' + dv + '/' + de + ' 已完成）');
       return { chapters: chapters };
     }
 
-    static getPendingTasks(chapters) {
+    static getAllTasks(chapters) {
       var tasks = [];
       for (var ci = 0; ci < chapters.length; ci++) {
         var ch = chapters[ci];
         for (var pj = 0; pj < ch.pairs.length; pj++) {
           var pair = ch.pairs[pj];
-          if (pair.video && !pair.video.isComplete) {
-            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'video', title: pair.video.title, domIndex: pair.video.domIndex, chapterItemIndex: pair.video.chapterItemIndex, progress: pair.video.progress });
+          if (pair.video) {
+            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'video', title: pair.video.title, domIndex: pair.video.domIndex, chapterItemIndex: pair.video.chapterItemIndex, progress: pair.video.progress, isComplete: pair.video.isComplete });
           }
-          if (pair.exam && !pair.exam.isComplete) {
-            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'exam', title: pair.exam.title, domIndex: pair.exam.domIndex, chapterItemIndex: pair.exam.chapterItemIndex, status: pair.exam.status });
+          if (pair.exam) {
+            tasks.push({ chapterIdx: ch.chapterIdx, chapterName: ch.name, pairIdx: pj, itemType: 'exam', title: pair.exam.title, domIndex: pair.exam.domIndex, chapterItemIndex: pair.exam.chapterItemIndex, status: pair.exam.status, isComplete: pair.exam.isComplete });
           }
         }
       }
-      return tasks;
+      return tasks.sort((left, right) => left.domIndex - right.domIndex);
     }
 
-    static async expandCollapsedAncestors(targetItem) {
+    static getPendingTasks(chapters) {
+      return CourseModel.getAllTasks(chapters)
+        .filter(task => !task.isComplete)
+        .map(({ isComplete, ...task }) => task);
+    }
+
+    static async expandCollapsedAncestors(targetItem, shouldContinue = () => true) {
       const ancestors = [];
       let node = targetItem.parentElement;
       while (node) {
@@ -559,6 +646,7 @@
 
       let count = 0;
       for (const item of ancestors) {
+        if (!shouldContinue()) return count;
         const header = item.querySelector('.el-collapse-item__header');
         if (header?.getAttribute('aria-expanded') !== 'false') continue;
         header.click();
@@ -568,10 +656,11 @@
       return count;
     }
 
-    static async navigateToDomIndex(domIndex, taskTitle, taskType, chapterName = '', chapterItemIndex = -1) {
+    static async navigateToDomIndex(domIndex, taskTitle, taskType, chapterName = '', chapterItemIndex = -1, shouldContinue = () => true) {
       // 从考试页或视频页回退后，Vue 可能尚未完成渲染，需要等待后重试。
       var allItems;
       for (let retry = 0; retry < 5; retry++) {
+        if (!shouldContinue()) return false;
         allItems = document.querySelectorAll('.el-collapse-item');
         if (allItems.length > 0) break;
         await sleep(1500);
@@ -584,10 +673,12 @@
       const target = CourseModel.resolveTaskItem(task, allItems, { logMove: true });
       if (!target) return false;
       var targetItem = target.item;
-      const openedAncestors = await CourseModel.expandCollapsedAncestors(targetItem);
+      const openedAncestors = await CourseModel.expandCollapsedAncestors(targetItem, shouldContinue);
+      if (!shouldContinue()) return false;
       if (openedAncestors > 0) logger.debug('按需展开父级目录：' + openedAncestors);
       targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(400);
+      if (!shouldContinue()) return false;
       var ct = targetItem.querySelector('.section') || targetItem.querySelector('.content_main') || targetItem.querySelector('.el-collapse-item__header');
       if (!ct) { logger.error('课程项 ' + target.domIndex + '：找不到可点击元素'); return false; }
       ct.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -597,22 +688,33 @@
   }
   // ======================== 视频处理器 ========================
   class VideoHandler {
-    static async waitForCompletion(isActive = () => true) {
+    static async waitForCompletion(isActive = () => true, isPaused = () => false) {
       logger.info('等待视频播放完成...');
 
-      const video = await waitForElement('#xgPlayer video', 10000);
+      const video = await waitForElement('#xgPlayer video', 10000, isActive);
       if (!video) {
         logger.warn('未检测到视频播放器');
         return false;
       }
+      if (!isActive()) return false;
 
       // 播放（不改变倍速——平台会检测）
-      if (video.paused) {
-        video.play().catch(() => {
+      const playVideo = () => {
+        if (!video.paused) return;
+        try {
+          const playResult = video.play();
+          if (!playResult?.catch) return;
+          playResult.catch(() => {
+            const btn = document.querySelector('.xgplayer-play, .xgplayer-start');
+            if (btn) btn.click();
+          });
+        } catch {
           const btn = document.querySelector('.xgplayer-play, .xgplayer-start');
           if (btn) btn.click();
-        });
-      }
+        }
+      };
+      let pausedByController = isPaused();
+      if (!pausedByController) playVideo();
 
       return new Promise((resolve) => {
         let resolved = false;
@@ -621,17 +723,26 @@
         let lastNearCompleteSeconds = null;
         let checkTimer = null;
         let countdownTimer = null;
-        let countdownFinishTimer = null;
         let timeoutTimer = null;
         let playerStalled = false;
         let lastPlaybackTime = Number(video.currentTime);
         let lastPlaybackAdvanceTime = Date.now();
+        let pausedAt = 0;
+        let onEnded = null;
+        let onWaiting = null;
+        let onStalled = null;
+        let onPlaying = null;
+        let onTimeUpdate = null;
 
         const cleanup = () => {
           if (checkTimer) clearInterval(checkTimer);
           if (countdownTimer) clearInterval(countdownTimer);
-          if (countdownFinishTimer) clearTimeout(countdownFinishTimer);
           if (timeoutTimer) clearTimeout(timeoutTimer);
+          if (onEnded) video.removeEventListener('ended', onEnded);
+          if (onWaiting) video.removeEventListener('waiting', onWaiting);
+          if (onStalled) video.removeEventListener('stalled', onStalled);
+          if (onPlaying) video.removeEventListener('playing', onPlaying);
+          if (onTimeUpdate) video.removeEventListener('timeupdate', onTimeUpdate);
         };
 
         const finish = (completed, reason) => {
@@ -644,7 +755,7 @@
         };
 
         const startEndingCountdown = (reason) => {
-          if (resolved || endingCountdownStarted) return;
+          if (resolved || endingCountdownStarted || !isActive()) return;
           endingCountdownStarted = true;
           let remaining = Math.ceil(CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000);
           logger.info(`视频已结束（${reason}），${remaining} 秒倒计时后继续...`);
@@ -653,33 +764,55 @@
               finish(false, '任务已停止');
               return;
             }
+            if (isPaused()) return;
             remaining--;
-            if (remaining > 0) logger.info(`视频完成确认倒计时：${remaining} 秒`);
+            if (remaining > 0) {
+              logger.info(`视频完成确认倒计时：${remaining} 秒`);
+              return;
+            }
+            finish(true, `${reason}后等待 ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000} 秒`);
           }, 1000);
-          countdownFinishTimer = setTimeout(() => {
-            if (!isActive()) finish(false, '任务已停止');
-            else finish(true, `${reason}后等待 ${CONFIG.VIDEO_POST_COMPLETE_DELAY / 1000} 秒`);
-          }, CONFIG.VIDEO_POST_COMPLETE_DELAY);
         };
 
-        video.addEventListener('ended', () => startEndingCountdown('收到视频结束事件'), { once: true });
-        video.addEventListener('waiting', () => { playerStalled = true; });
-        video.addEventListener('stalled', () => { playerStalled = true; });
-        video.addEventListener('playing', () => { playerStalled = false; });
-        video.addEventListener('timeupdate', () => {
+        onEnded = () => startEndingCountdown('收到视频结束事件');
+        onWaiting = () => { playerStalled = true; };
+        onStalled = () => { playerStalled = true; };
+        onPlaying = () => { playerStalled = false; };
+        onTimeUpdate = () => {
           const currentTime = Number(video.currentTime);
           if (Number.isFinite(currentTime)) {
             lastPlaybackTime = currentTime;
             lastPlaybackAdvanceTime = Date.now();
             playerStalled = false;
           }
-        });
+        };
+        video.addEventListener('ended', onEnded, { once: true });
+        video.addEventListener('waiting', onWaiting);
+        video.addEventListener('stalled', onStalled);
+        video.addEventListener('playing', onPlaying);
+        video.addEventListener('timeupdate', onTimeUpdate);
 
         checkTimer = setInterval(() => {
           if (resolved) return;
           if (!isActive()) {
             finish(false, '任务已停止');
             return;
+          }
+          if (isPaused()) {
+            pausedByController = true;
+            if (!video.paused) {
+              try { video.pause(); } catch {}
+            }
+            if (!pausedAt) pausedAt = Date.now();
+            return;
+          }
+          if (pausedByController) {
+            pausedByController = false;
+            playVideo();
+          }
+          if (pausedAt) {
+            if (nearCompleteTime) nearCompleteTime += Date.now() - pausedAt;
+            pausedAt = 0;
           }
           if (VideoHandler.needsRefresh()) {
             finish(false, '播放器已卸载或报错');
@@ -808,7 +941,8 @@
 
       // 1. 点击交卷
       logger.info('[1] 点击交卷...');
-      const btn = await waitForElement('.paperBtn', 5000) || findBtnByText('交卷');
+      const btn = await waitForElement('.paperBtn', 5000, shouldContinue) || (shouldContinue() ? findBtnByText('交卷') : null);
+      if (!canContinue()) return false;
       if (btn) { btn.click(); logger.success('已点击交卷'); await sleep(1500); }
       else { logger.error('未找到交卷按钮'); return false; }
       if (!canContinue()) return false;
@@ -835,14 +969,16 @@
       logger.info('[3] 查看试卷...');
       await sleep(1000);
       if (!canContinue()) return false;
-      const viewBtn = await waitForElement('.determine', 5000) || findBtnByText('查看试卷');
+      const viewBtn = await waitForElement('.determine', CONFIG.NAVIGATION_TIMEOUT, shouldContinue) || (shouldContinue() ? findBtnByText('查看试卷') : null);
+      if (!canContinue()) return false;
       if (viewBtn) { viewBtn.click(); logger.success('已点击查看试卷'); await sleep(1500); }
-      else { logger.warn('未找到查看试卷按钮，直接返回'); }
+      else { logger.error('未检测到交卷成功结果页，保留当前考试并恢复重试'); return false; }
       if (!canContinue()) return false;
 
       // 4. 返回 — 直接用浏览器回退
       logger.info('[4] 返回课程页...');
       await sleep(500);
+      if (!canContinue()) return false;
       history.back();
       await sleep(2000);
 
@@ -938,6 +1074,8 @@
       this._reloadTimer = null;
       this._loopRunId = 0;
       this._completionNotificationSent = false;
+      this._completionNotificationInFlight = false;
+      this._pausedVideo = null;
     }
 
     restoreState() {
@@ -974,6 +1112,10 @@
         this.stats = savedState.stats || this.stats;
         this.courseId = savedState.courseId || currentCourseId || this.courseId;
       } else {
+        this.tasks = [];
+        this.sections = [];
+        this.currentIndex = 0;
+        this.stats = { videos: 0, exams: 0, errors: 0, skipped: 0 };
         this.courseId = currentCourseId || this.courseId;
         if (StateManager.isResumable(savedState) && isCoursePage()) {
           logger.warn(`已保存的是课程 ${savedState.courseId}，当前为 ${currentCourseId}，不会串课恢复`);
@@ -984,6 +1126,8 @@
       this.paused = false;
       this._reloading = false;
       this._completionNotificationSent = false;
+      this._completionNotificationInFlight = false;
+      this._pausedVideo = null;
       const runId = ++this._runId;
 
       if (forceFreshDirectory) {
@@ -994,7 +1138,7 @@
       }
 
       logger.info('========================================');
-      logger.info('=== 自动刷课助手 v2（DOM 索引定位）===');
+      logger.info('=== 自动刷课助手 v2（多重锚点定位）===');
       logger.info('========================================');
 
       // 不在课程页或目录扫描标识不匹配时，先跳转到全新的课程总览页。
@@ -1022,7 +1166,10 @@
       // 根据当前页面重新构建课程模型，不复用刷新前的目录。
       let model;
       try {
-        model = await CourseModel.buildModel({ scanId: forceFreshDirectory ? savedState.directoryScanId : '' });
+        model = await CourseModel.buildModel({
+          scanId: forceFreshDirectory ? savedState.directoryScanId : '',
+          shouldContinue: () => this._isActiveRun(runId),
+        });
       } catch (e) {
         logger.error(`课程目录解析异常: ${e.message}`, e.stack);
       }
@@ -1034,8 +1181,9 @@
         return;
       }
 
-      // 过滤出未完成的
-      this.tasks = CourseModel.getPendingTasks(model.chapters);
+      // 保留完整模型供平台顺序提示回查，再过滤出未完成任务。
+      this.sections = model.chapters;
+      this.tasks = CourseModel.getPendingTasks(this.sections);
 
       if (this.tasks.length === 0) {
         logger.success('所有节次已完成');
@@ -1064,15 +1212,45 @@
       await this._processLoop(runId);
     }
 
-    pause() { this.paused = true; logger.info('已暂停'); }
+    pause() {
+      this.paused = true;
+      const video = document.querySelector('#xgPlayer video');
+      if (video && !video.paused) {
+        try {
+          video.pause();
+          this._pausedVideo = video;
+        } catch (error) {
+          logger.warn(`暂停视频失败：${error.message}`);
+        }
+      }
+      logger.info('已暂停');
+    }
     resume() {
       this.paused = false;
       this._lastProgressTime = Date.now();
+      const video = this._pausedVideo;
+      this._pausedVideo = null;
+      if (video && video.isConnected !== false && video.paused) {
+        try {
+          const playResult = video.play();
+          playResult?.catch?.(() => {
+            const button = document.querySelector('.xgplayer-play, .xgplayer-start');
+            if (button) button.click();
+          });
+        } catch (error) {
+          logger.warn(`继续播放视频失败：${error.message}`);
+        }
+      }
       logger.info('已继续');
       if (this.running && (!this._loopRunning || this._loopRunId !== this._runId)) this._processLoop(this._runId);
     }
 
     stop() {
+      const video = document.querySelector('#xgPlayer video');
+      if (video && !video.paused) {
+        try { video.pause(); } catch (error) { logger.warn(`停止视频失败：${error.message}`); }
+      }
+      this._pausedVideo = null;
       this._runId++;
       this.running = false;
       this.paused = false;
@@ -1138,7 +1316,7 @@
         logger.info(`类型：${getTaskTypeLabel(task.itemType)} | 章节：${task.chapterName}`);
 
         // 二次确认：当前节次是否真的未完成
-        if (isCoursePage()) {
+        if (!task.forceProcess && isCoursePage()) {
           var recheckItem = CourseModel.resolveTaskItem(task)?.item;
           if (recheckItem) {
             const ll = recheckItem.querySelector('.loadingLinear');
@@ -1149,6 +1327,8 @@
               continue;
             }
           }
+        } else if (task.forceProcess) {
+          logger.info(`平台要求重新处理，忽略目录中的已完成标记：${task.title}`);
         }
 
         let outcome = false;
@@ -1208,15 +1388,25 @@
         logger.info('回退到课程页...');
         history.back();
         await sleep(3000);
+        if (!this._isActiveRun(runId) || this.paused) return false;
         if (!isCoursePage()) {
           history.back();
           await sleep(3000);
+          if (!this._isActiveRun(runId) || this.paused) return false;
         }
         if (!isCoursePage()) return false;
       }
 
       if (!this._isActiveRun(runId)) return false;
-      const navOk = await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType, task.chapterName, task.chapterItemIndex);
+      const canContinue = () => this._isActiveRun(runId) && !this.paused;
+      const navOk = await CourseModel.navigateToDomIndex(
+        task.domIndex,
+        task.title,
+        task.itemType,
+        task.chapterName,
+        task.chapterItemIndex,
+        canContinue,
+      );
       if (!navOk) {
         logger.warn('导航失败：[' + getTaskTypeLabel(task.itemType) + '] ' + task.title);
         return false;
@@ -1230,13 +1420,14 @@
         if (isVideoPage()) {
           this._longOperation = true;
           logger.success('进入视频页面');
-          const videoEl = await waitForElement('#xgPlayer video', 8000);
+          const videoEl = await waitForElement('#xgPlayer video', 8000, canContinue);
           if (!videoEl) {
             logger.warn('视频播放器未加载');
             return false;
           }
-          return VideoHandler.waitForCompletion(() =>
-            this._isActiveRun(runId) && !this.paused && videoEl.isConnected !== false
+          return VideoHandler.waitForCompletion(
+            () => this._isActiveRun(runId) && videoEl.isConnected !== false,
+            () => this.paused,
           );
         }
 
@@ -1259,17 +1450,17 @@
           const hint = detectOrderHint();
           if (hint) {
             logger.warn(`平台提示应先完成：“${hint}”`);
-            const matchIndex = this.tasks.findIndex(t => hint.includes(t.title) || t.title.includes(hint));
-            if (matchIndex >= 0 && matchIndex !== this.currentIndex) {
-              this.currentIndex = matchIndex;
-              this._saveState({ retryCount: 0, retryAt: null, lastReloadReason: '' });
-              logger.info(`纠错：下一个处理“${this.tasks[matchIndex].title}”`);
-              return 'redirected';
-            }
-            if (matchIndex < 0) logger.warn(`提示节次 "${hint}" 未在待处理列表中匹配到`);
+            if (this._prioritizeOrderHint(hint)) return 'redirected';
           }
           if (attempt === 2) {
-            await CourseModel.navigateToDomIndex(task.domIndex, task.title, task.itemType, task.chapterName, task.chapterItemIndex);
+            await CourseModel.navigateToDomIndex(
+              task.domIndex,
+              task.title,
+              task.itemType,
+              task.chapterName,
+              task.chapterItemIndex,
+              canContinue,
+            );
             logger.debug('重新触发点击...');
           }
           await sleep(2000);
@@ -1281,6 +1472,45 @@
 
       logger.error('页面跳转超时');
       return false;
+    }
+
+    _prioritizeOrderHint(hint) {
+      const currentTask = this.tasks[this.currentIndex];
+      const allTasks = CourseModel.getAllTasks(this.sections || []);
+      const matches = allTasks.filter(task => isOrderHintTitleMatch(hint, task.title));
+      if (matches.length === 0) {
+        logger.warn(`提示节次“${hint}”未在完整课程目录中匹配到`);
+        return false;
+      }
+
+      const currentDomIndex = Number(currentTask?.domIndex);
+      const precedingMatches = Number.isInteger(currentDomIndex)
+        ? matches.filter(task => Number(task.domIndex) < currentDomIndex)
+        : [];
+      const requiredTask = precedingMatches.length > 0
+        ? precedingMatches[precedingMatches.length - 1]
+        : matches.length === 1 ? matches[0] : null;
+      if (!requiredTask) {
+        logger.warn(`提示节次“${hint}”在完整课程目录中匹配到 ${matches.length} 项，无法安全确定前置任务`);
+        return false;
+      }
+
+      const isSameDirectoryTask = task => !!task &&
+        Number(task.domIndex) === Number(requiredTask.domIndex) &&
+        task.itemType === requiredTask.itemType;
+      if (isSameDirectoryTask(currentTask)) {
+        logger.info(`平台提示指向当前任务，将重试点击：“${currentTask.title}”`);
+        return false;
+      }
+
+      const existingIndex = this.tasks.findIndex((task, index) =>
+        index >= this.currentIndex && isSameDirectoryTask(task)
+      );
+      if (existingIndex > this.currentIndex) this.tasks.splice(existingIndex, 1);
+      this.tasks.splice(this.currentIndex, 0, { ...requiredTask, forceProcess: true });
+      this._saveState({ retryCount: 0, retryAt: null, lastReloadReason: '' });
+      logger.info(`纠错：优先重新处理“${requiredTask.title}”，完成后返回当前任务`);
+      return true;
     }
 
     // 看门狗：超过 120 秒无进展时，持久化断点后再刷新。
@@ -1315,7 +1545,10 @@
       const previous = StateManager.load();
       const task = this.tasks[this.currentIndex];
       if (!task) {
-        if (StateManager.hasResumeState(previous)) {
+        const courseId = this.courseId || getCourseIdFromHash();
+        const previousMatchesCourse = StateManager.hasResumeState(previous) && !!courseId &&
+          String(previous.courseId || '') === String(courseId);
+        if (previousMatchesCourse) {
           return {
             ...previous,
             stats: { ...this.stats },
@@ -1323,7 +1556,6 @@
             ...overrides,
           };
         }
-        const courseId = this.courseId || getCourseIdFromHash();
         if (!courseId) return null;
         // 首次解析课程目录前也要有可恢复状态，否则目录等待超时会无断点可用。
         return {
@@ -1426,9 +1658,14 @@
       logger.info('\n========================================');
       logger.success('全部完成！');
       logger.info(`视频：${this.stats.videos} | 考试：${this.stats.exams} | 错误：${this.stats.errors}`);
-      if (!this._completionNotificationSent) {
-        this._completionNotificationSent = true;
-        void ServerChanNotifier.sendTaskCompleted(this.stats, this.courseId);
+      if (!this._completionNotificationSent && !this._completionNotificationInFlight) {
+        const notificationRunId = this._runId;
+        this._completionNotificationInFlight = true;
+        void ServerChanNotifier.sendTaskCompleted(this.stats, this.courseId).then(sent => {
+          if (this._runId !== notificationRunId) return;
+          this._completionNotificationInFlight = false;
+          if (sent) this._completionNotificationSent = true;
+        });
       }
     }
   }
@@ -1438,6 +1675,7 @@
     constructor(autoPlayer) {
       this.ap = autoPlayer;
       this.panel = null;
+      this.updateNotice = null;
       this.expanded = true; // 面板初始显示完整内容
       this._build();
       logger.onLog(e => this._addLog(e));
@@ -1522,11 +1760,32 @@
       #ouchn-ap-v2 .resize-handle:hover{border-color:#0a84ff}
       #ouchn-ap-v2.mini .body{display:none}
       #ouchn-ap-v2.mini{width:218px;min-width:218px;resize:none}
+      #ouchn-ap-v2.mini .aiask-button,#ouchn-ap-v2.mini .version{display:none}
+      #ouchn-ap-v2.mini .acts{margin-left:auto;flex:none}
+      #ouchn-ap-v2.mini .hdr{gap:8px;padding-right:12px;padding-left:12px}
+      @keyframes ap-update-enter{from{opacity:0;transform:translateY(-8px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+      #ouchn-update-notice{position:fixed;z-index:100000;display:grid;grid-template-columns:32px minmax(0,1fr) 28px;gap:10px;box-sizing:border-box;padding:15px 14px 15px 18px;overflow:hidden;color-scheme:light;background:rgba(255,255,255,.96);border:1px solid rgba(0,0,0,.1);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.24),0 1px 0 rgba(255,255,255,.9) inset;backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);font:13px/1.55 -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;color:#1d1d1f;user-select:text;animation:ap-update-enter .2s cubic-bezier(.2,.8,.2,1) both;transform-origin:top right;transition:opacity .16s ease,transform .16s ease}
+      #ouchn-update-notice::before{content:'';position:absolute;inset:0 auto 0 0;width:4px;background:#ff7a00}
+      #ouchn-update-notice.is-closing{opacity:0;transform:translateY(-5px) scale(.99);pointer-events:none}
+      #ouchn-update-notice .update-icon{display:flex;align-items:center;justify-content:center;width:28px;height:28px;margin-top:1px;border-radius:50%;background:#fff1e5;font:700 16px/1 -apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;color:#e76500}
+      #ouchn-update-notice .update-content{min-width:0}
+      #ouchn-update-notice .update-heading{display:flex;align-items:center;gap:7px;margin-bottom:5px;font-size:14px;font-weight:700;color:#1d1d1f}
+      #ouchn-update-notice .update-badge{padding:2px 6px;border-radius:999px;background:#fff1e5;font-size:10px;line-height:1.4;color:#d75f00}
+      #ouchn-update-notice .update-close{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:50%;background:transparent;color:#6e6e73;cursor:pointer;font:20px/1 -apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;transition:background .16s ease,color .16s ease,transform .16s ease}
+      #ouchn-update-notice .update-close:hover{background:rgba(0,0,0,.06);color:#1d1d1f}
+      #ouchn-update-notice .update-close:active{transform:scale(.92)}
+      #ouchn-update-notice .update-line{margin:2px 0;color:#6e6e73}
+      #ouchn-update-notice .update-line strong{font-weight:650;color:#1d1d1f}
+      #ouchn-update-notice .update-line .update-latest{color:#d70015}
+      #ouchn-update-notice .update-action{display:inline-flex;align-items:center;justify-content:center;min-height:34px;margin-top:9px;padding:0 11px;border-radius:8px;background:#e8f2ff;font-size:12px;font-weight:650;color:#0071e3;text-decoration:none;transition:background .16s ease,color .16s ease,transform .16s ease}
+      #ouchn-update-notice .update-action:hover{background:#d8eaff;color:#005bbd}
+      #ouchn-update-notice .update-action:active{transform:scale(.98)}
+      #ouchn-update-notice .update-close:focus-visible,#ouchn-update-notice .update-action:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
       @media (max-width:460px){#ouchn-ap-v2{right:8px;top:56px;width:calc(100vw - 16px);min-width:0}#ouchn-ap-v2 .hdr{gap:8px;padding-right:11px;padding-left:11px}#ouchn-ap-v2 .body{padding:10px}#ouchn-ap-v2 .panel-title{font-size:17px}#ouchn-ap-v2 .aiask-button{padding:0 8px;font-size:9px}}
       @media (max-width:360px){#ouchn-ap-v2 .version{display:none}}
-      @media (prefers-reduced-motion:reduce){#ouchn-ap-v2 *,#ouchn-ap-v2 *::before,#ouchn-ap-v2 *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
-      @media (prefers-reduced-transparency:reduce){#ouchn-ap-v2{background:#1c1c1e;backdrop-filter:none;-webkit-backdrop-filter:none}#ouchn-ap-v2 .hdr{background:#2c2c2e}}
-      @media (prefers-contrast:more){#ouchn-ap-v2{background:#1c1c1e;border-color:#fff}#ouchn-ap-v2 .live,#ouchn-ap-v2 .st span,#ouchn-ap-v2 .log-wrap{border-color:rgba(255,255,255,.38)}}
+      @media (prefers-reduced-motion:reduce){#ouchn-ap-v2 *,#ouchn-ap-v2 *::before,#ouchn-ap-v2 *::after,#ouchn-update-notice,#ouchn-update-notice *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+      @media (prefers-reduced-transparency:reduce){#ouchn-ap-v2{background:#1c1c1e;backdrop-filter:none;-webkit-backdrop-filter:none}#ouchn-ap-v2 .hdr{background:#2c2c2e}#ouchn-update-notice{background:#fff;backdrop-filter:none;-webkit-backdrop-filter:none}}
+      @media (prefers-contrast:more){#ouchn-ap-v2{background:#1c1c1e;border-color:#fff}#ouchn-ap-v2 .live,#ouchn-ap-v2 .st span,#ouchn-ap-v2 .log-wrap{border-color:rgba(255,255,255,.38)}#ouchn-update-notice{background:#fff;border:2px solid #000}}
       `;
       const style = document.createElement('style');
       style.textContent = css;
@@ -1553,10 +1812,11 @@
             <button class="debug-button" id="bdbg" aria-controls="dbgrow" aria-expanded="false">调试与更新</button>
           </div>
           <div class="serverchan-row" id="serverchanrow" role="region" aria-label="Server酱³消息通知设置">
-            <label for="serverchankey">SendKey（留空则不发送）</label>
+            <label for="serverchankey">SendKey（已保存值不会回显）</label>
             <input id="serverchankey" type="password" autocomplete="off" spellcheck="false" placeholder="sctp...">
             <a href="${CONFIG.SERVERCHAN_DOC_URL}" target="_blank" rel="noopener noreferrer">使用文档</a>
             <button id="serverchantest">发送测试消息</button>
+            <button class="muted" id="serverchanclear">清除已保存 SendKey</button>
           </div>
           <div class="dbg-row" id="dbgrow" role="region" aria-label="调试与更新选项">
             <button id="dbgupdate">检查最新发布版本</button>
@@ -1602,10 +1862,27 @@
         this._ui();
       });
       const sendKeyInput = this.panel.querySelector('#serverchankey');
-      sendKeyInput.value = ServerChanNotifier.getSendKey();
+      const updateSendKeyState = () => {
+        const configured = !!ServerChanNotifier.getSendKey();
+        sendKeyInput.value = '';
+        sendKeyInput.placeholder = configured ? '已配置；输入新 SendKey 可替换' : 'sctp...';
+        sendKeyInput.dataset.configured = String(configured);
+      };
+      const saveEnteredSendKey = () => {
+        const entered = sendKeyInput.value.trim();
+        if (!entered) return true;
+        if (!ServerChanNotifier.getEndpoint(entered)) {
+          logger.warn('Server酱³ SendKey 格式无效，未保存');
+          return false;
+        }
+        ServerChanNotifier.setSendKey(entered);
+        updateSendKeyState();
+        logger.info('Server酱³ SendKey 已保存');
+        return true;
+      };
+      updateSendKeyState();
       sendKeyInput.addEventListener('change', () => {
-        ServerChanNotifier.setSendKey(sendKeyInput.value);
-        logger.info(sendKeyInput.value.trim() ? 'Server酱³ SendKey 已保存' : 'Server酱³ 完成通知已关闭');
+        saveEnteredSendKey();
       });
       this.panel.querySelector('#bserverchan').addEventListener('click', () => {
         const row = this.panel.querySelector('#serverchanrow');
@@ -1614,8 +1891,8 @@
         if (row.classList.contains('show')) sendKeyInput.focus();
       });
       this.panel.querySelector('#serverchantest').addEventListener('click', async event => {
-        ServerChanNotifier.setSendKey(sendKeyInput.value);
-        if (!sendKeyInput.value.trim()) {
+        if (!saveEnteredSendKey()) return;
+        if (!ServerChanNotifier.getSendKey()) {
           logger.warn('请先填写 Server酱³ SendKey');
           return;
         }
@@ -1623,6 +1900,11 @@
         button.disabled = true;
         await ServerChanNotifier.sendTest();
         button.disabled = false;
+      });
+      this.panel.querySelector('#serverchanclear').addEventListener('click', () => {
+        ServerChanNotifier.setSendKey('');
+        updateSendKeyState();
+        logger.info('Server酱³ 完成通知已关闭');
       });
       this.panel.querySelector('.btn-tog').addEventListener('click', () => {
         this.expanded = !this.expanded;
@@ -1685,8 +1967,8 @@
           return;
         }
         if (comparison > 0) {
-          logger.success(`发现新发布版本 ${remoteTag}（当前 v${CONFIG.VERSION}），正在打开发布页...`);
-          window.open(release.url, '_blank');
+          logger.success(`发现新发布版本 ${remoteTag}（当前 v${CONFIG.VERSION}），已显示更新提醒`);
+          this._showUpdateNotice(release);
         } else if (comparison === 0) {
           logger.info(`当前已是最新发布版本 v${CONFIG.VERSION}`);
         } else {
@@ -1695,6 +1977,75 @@
       } catch (e) {
         logger.warn(`检查更新失败：${e.message}`);
       }
+    }
+
+    _showUpdateNotice(release) {
+      this.updateNotice?.remove();
+      document.getElementById('ouchn-update-notice')?.remove();
+
+      const notice = document.createElement('aside');
+      notice.id = 'ouchn-update-notice';
+      notice.setAttribute('role', 'status');
+      notice.setAttribute('aria-live', 'polite');
+      notice.setAttribute('aria-label', '发现新版本');
+      notice.innerHTML = `
+        <div class="update-icon" aria-hidden="true">!</div>
+        <div class="update-content">
+          <div class="update-heading">请注意 <span class="update-badge">新版本</span></div>
+          <p class="update-line">最新版本：<strong class="update-latest" data-update-latest></strong></p>
+          <p class="update-line">当前版本：<strong data-update-current></strong></p>
+          <p class="update-line">可用来源：<strong>GitHub Releases</strong></p>
+          <p class="update-line">检测时间：<strong data-update-checked></strong></p>
+        </div>
+        <button class="update-close" type="button" aria-label="关闭更新提醒">×</button>`;
+
+      const latestValue = notice.querySelector('[data-update-latest]');
+      latestValue.textContent = release.tag;
+      notice.querySelector('[data-update-current]').textContent = `v${CONFIG.VERSION}`;
+      notice.querySelector('[data-update-checked]').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
+
+      const updateLink = document.createElement('a');
+      updateLink.className = 'update-action';
+      updateLink.href = release.url;
+      updateLink.target = '_blank';
+      updateLink.rel = 'noopener noreferrer';
+      updateLink.textContent = '前往 GitHub Releases 更新';
+      notice.querySelector('.update-content').appendChild(updateLink);
+
+      notice.querySelector('.update-close').addEventListener('click', () => this._hideUpdateNotice(true));
+      notice.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        this._hideUpdateNotice(true);
+      });
+
+      document.body.appendChild(notice);
+      this.updateNotice = notice;
+      this._positionUpdateNotice();
+    }
+
+    _positionUpdateNotice() {
+      if (!this.updateNotice || !this.panel) return;
+      const margin = window.innerWidth <= 460 ? 8 : 16;
+      const width = Math.min(390, window.innerWidth - margin * 2);
+      const panelRect = this.panel.getBoundingClientRect();
+      const left = Math.max(margin, Math.min(panelRect.right - width, window.innerWidth - width - margin));
+      const preferredTop = Math.max(margin, panelRect.top - 48);
+      this.updateNotice.style.width = `${width}px`;
+      const maxTop = Math.max(margin, window.innerHeight - this.updateNotice.offsetHeight - margin);
+      this.updateNotice.style.left = `${left}px`;
+      this.updateNotice.style.top = `${Math.min(preferredTop, maxTop)}px`;
+    }
+
+    _hideUpdateNotice(restoreFocus = false) {
+      const notice = this.updateNotice;
+      if (!notice) return;
+      this.updateNotice = null;
+      notice.classList.add('is-closing');
+      if (restoreFocus) this.panel?.querySelector('#dbgupdate')?.focus();
+      const remove = () => notice.remove();
+      if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) remove();
+      else setTimeout(remove, 170);
     }
 
     _makeDraggable() {
@@ -1713,8 +2064,10 @@
         this.panel.style.left = (ix + e.clientX - sx) + 'px';
         this.panel.style.top = (iy + e.clientY - sy) + 'px';
         this.panel.style.right = 'auto';
+        this._positionUpdateNotice();
       });
       document.addEventListener('mouseup', () => { if (d) { d = false; this.panel.style.transition = ''; } });
+      window.addEventListener('resize', () => this._positionUpdateNotice());
     }
   }
 

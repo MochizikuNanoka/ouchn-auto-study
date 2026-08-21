@@ -12,6 +12,7 @@ function createHarness({
   session = new Map(),
   gmStorage = new Map(),
   gmResponseStatus = 200,
+  gmResponseText = JSON.stringify({ code: 0, message: 'ok' }),
   gmResponseFinalUrl = '',
   strictMouseEvent = false,
 } = {}) {
@@ -116,7 +117,7 @@ function createHarness({
     },
     GM_xmlhttpRequest(options) {
       requests.push(options);
-      options.onload({ status: gmResponseStatus, responseText: '', finalUrl: gmResponseFinalUrl });
+      options.onload({ status: gmResponseStatus, responseText: gmResponseText, finalUrl: gmResponseFinalUrl });
     },
     history: { back() {} },
     location,
@@ -138,7 +139,7 @@ function createHarness({
   assert.notEqual(instrumented, source, 'ControlPanel test replacement point is missing');
   instrumented = instrumented.replace(
     initMarker,
-    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, ServerChanNotifier, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, getLatestPublishedRelease, init, shouldAutoResume };\n\n" + initMarker,
+    "  globalThis.__AUTOPLAYER_TEST_HOOKS__ = { AutoPlayer, CONFIG, CourseModel, StateManager, VideoHandler, ExamHandler, ServerChanNotifier, logger, compareVersions: typeof compareVersions === 'function' ? compareVersions : undefined, detectOrderHint, getLatestPublishedRelease, init, shouldAutoResume };\n\n" + initMarker,
   );
   vm.runInNewContext(instrumented, context, { filename: scriptPath });
 
@@ -158,11 +159,17 @@ function createHarness({
 
 function createVideo() {
   const listeners = new Map();
+  let pauseCalls = 0;
+  let playCalls = 0;
   return {
     ended: false,
     paused: false,
-    play() { return Promise.resolve(); },
+    get pauseCalls() { return pauseCalls; },
+    get playCalls() { return playCalls; },
+    pause() { pauseCalls += 1; this.paused = true; },
+    play() { playCalls += 1; this.paused = false; return Promise.resolve(); },
     addEventListener(type, callback) { listeners.set(type, callback); },
+    removeEventListener(type) { listeners.delete(type); },
     emit(type) { listeners.get(type)?.(); },
   };
 }
@@ -231,6 +238,31 @@ test('never resumes a checkpoint for a different course or a deliberately stoppe
 
   assert.equal(shouldAutoResume(checkpoint, '3017'), false);
   assert.equal(shouldAutoResume({ ...checkpoint, autoResume: false }, '3016'), false);
+});
+
+test('目录失败时不会复用其他课程的旧断点', async () => {
+  const oldCheckpoint = {
+    autoResume: true,
+    chapterIdx: 0,
+    pairIdx: 0,
+    itemType: 'video',
+    title: '旧课程任务',
+    courseId: '3016',
+    stats: { videos: 1, exams: 0, errors: 0, skipped: 0 },
+  };
+  const harness = createHarness({
+    hash: '#/myCourse/study?id=3017',
+    storage: new Map([['ouchn_autoplay_v2', JSON.stringify(oldCheckpoint)]]),
+  });
+  harness.hooks.CourseModel.buildModel = async () => null;
+
+  const player = new harness.hooks.AutoPlayer();
+  await player.start();
+
+  const recovery = harness.hooks.StateManager.load();
+  assert.equal(player.courseId, '3017');
+  assert.equal(recovery.courseId, '3017');
+  assert.equal(recovery.stage, 'initializing');
 });
 
 test('断点标题不一致时不按旧节次序号误续跑', () => {
@@ -414,6 +446,130 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('invalid', '2.0.3'), null);
 });
 
+test('v2.0.17 发布版本在元数据、运行时配置和 README 中保持一致', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+
+  assert.match(source, /^\/\/ @version\s+2\.0\.17$/m);
+  assert.match(source, /VERSION: '2\.0\.17'/);
+  assert.match(readme, /badge\/version-2\.0\.17-/);
+  assert.match(readme, /^\| 2\.0\.17 \| 2026-08-21 \|/m);
+});
+
+test('平台顺序提示保留节次标题中的空白与完整正文', () => {
+  const harness = createHarness();
+  harness.selectors.set('.el-message-box, .el-dialog, .el-notification, .el-alert, .el-message', [{
+    textContent: '请先完成：第 1 节 如何使用 Word',
+  }]);
+
+  assert.equal(harness.hooks.detectOrderHint(), '第 1 节 如何使用 Word');
+});
+
+test('顺序提示可从完整课程模型找回被误判为完成的前置节次', () => {
+  const harness = createHarness();
+  const chapters = [{
+    chapterIdx: 0,
+    name: '第一章',
+    pairs: [
+      {
+        video: { domIndex: 1, chapterItemIndex: 0, title: '第 1 节　如何使用 Word', progress: 100, isComplete: true },
+        exam: null,
+      },
+      {
+        video: { domIndex: 2, chapterItemIndex: 1, title: '第 2 节 保存文档', progress: 0, isComplete: false },
+        exam: null,
+      },
+    ],
+  }];
+  const player = new harness.hooks.AutoPlayer();
+  player.courseId = '3016';
+  player.sections = chapters;
+  player.tasks = harness.hooks.CourseModel.getPendingTasks(chapters);
+
+  assert.equal(player._prioritizeOrderHint('第1节\u200b 如何使用 Word'), true);
+  assert.deepEqual(
+    Array.from(player.tasks, task => task.title),
+    ['第 1 节　如何使用 Word', '第 2 节 保存文档'],
+  );
+  assert.equal(player.tasks[0].forceProcess, true);
+  assert.equal(player.currentIndex, 0);
+});
+
+test('多个同名节次只选择当前任务之前距离最近的候选', () => {
+  const harness = createHarness();
+  const chapters = [
+    {
+      chapterIdx: 0,
+      name: '第一章',
+      pairs: [{
+        video: { domIndex: 1, chapterItemIndex: 0, title: '章节练习', progress: 100, isComplete: true },
+        exam: null,
+      }],
+    },
+    {
+      chapterIdx: 1,
+      name: '第二章',
+      pairs: [
+        {
+          video: { domIndex: 8, chapterItemIndex: 0, title: '章节练习', progress: 100, isComplete: true },
+          exam: null,
+        },
+        {
+          video: { domIndex: 10, chapterItemIndex: 1, title: '下一节课程', progress: 0, isComplete: false },
+          exam: null,
+        },
+      ],
+    },
+  ];
+  const player = new harness.hooks.AutoPlayer();
+  player.courseId = '3016';
+  player.sections = chapters;
+  player.tasks = harness.hooks.CourseModel.getPendingTasks(chapters);
+
+  assert.equal(player._prioritizeOrderHint('章节练习'), true);
+  assert.equal(player.tasks[0].domIndex, 8);
+  assert.equal(player.tasks[0].chapterName, '第二章');
+  assert.equal(player.tasks[1].title, '下一节课程');
+});
+
+test('平台要求重做的 100% 视频不会被二次确认再次跳过', async () => {
+  const harness = createHarness();
+  const player = new harness.hooks.AutoPlayer();
+  player.courseId = '3016';
+  player.running = true;
+  player.tasks = [{
+    chapterIdx: 0,
+    chapterName: '第一章',
+    pairIdx: 0,
+    itemType: 'video',
+    title: '第 1 节 如何使用 Word',
+    domIndex: 1,
+    chapterItemIndex: 0,
+    progress: 100,
+    forceProcess: true,
+  }];
+  const runId = ++player._runId;
+  let processCalls = 0;
+  harness.hooks.CourseModel.resolveTaskItem = () => ({
+    item: {
+      querySelector(selector) {
+        return selector === '.loadingLinear' ? { textContent: '100%' } : null;
+      },
+    },
+  });
+  player._navigateAndProcess = async () => {
+    processCalls += 1;
+    return true;
+  };
+
+  const pending = player._processLoop(runId);
+  await flushPromises();
+  harness.advance(2000);
+  await pending;
+
+  assert.equal(processCalls, 1);
+});
+
 test('更新检查不依赖 GitHub REST API 匿名额度', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
 
@@ -434,6 +590,18 @@ test('更新检查从最新正式 Release 跳转地址解析版本', async () =>
   assert.equal(harness.requests[0].url, `${harness.hooks.CONFIG.RELEASE_LATEST_URL}?_=0`);
   assert.equal(harness.requests[0].anonymous, true);
   assert.equal(harness.requests[0].nocache, true);
+});
+
+test('发现新版时先显示可关闭提醒，再由用户安全打开发布页', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.match(source, /this\._showUpdateNotice\(release\)/);
+  assert.match(source, /notice\.id = 'ouchn-update-notice'/);
+  assert.match(source, /latestValue\.textContent = release\.tag/);
+  assert.match(source, /updateLink\.target = '_blank'/);
+  assert.match(source, /updateLink\.rel = 'noopener noreferrer'/);
+  assert.match(source, /updateLink\.textContent = '前往 GitHub Releases 更新'/);
+  assert.doesNotMatch(source, /window\.open\(release\.url/);
 });
 
 test('Server酱³ 使用私有存储并按 SendKey 中的 UID 发送完成通知', async () => {
@@ -466,6 +634,41 @@ test('Server酱³ 可以发送独立测试消息', async () => {
   assert.equal(body.get('desp'), 'Server酱³消息通知配置正常。');
 });
 
+test('Server酱³ HTTP 成功但业务 code 非零时按失败处理', async () => {
+  const harness = createHarness({
+    gmStorage: new Map([['serverchan3_sendkey', 'sctp12345tabc']]),
+    gmResponseText: JSON.stringify({ code: 1, message: 'rejected' }),
+  });
+
+  const sent = await harness.hooks.ServerChanNotifier.send('测试', '内容', '不应记录成功');
+
+  assert.equal(sent, false);
+  assert.equal(harness.logs.some(entry => entry.message.includes('不应记录成功')), false);
+});
+
+test('Server酱³ 完成通知失败后执行有限退避重试', async () => {
+  const harness = createHarness({
+    gmStorage: new Map([['serverchan3_sendkey', 'sctp12345tabc']]),
+  });
+  let requestCount = 0;
+  harness.context.GM_xmlhttpRequest = options => {
+    requestCount += 1;
+    if (requestCount === 1) options.onload({ status: 500, responseText: '', finalUrl: '' });
+    else options.onload({ status: 200, responseText: JSON.stringify({ code: 0 }), finalUrl: '' });
+  };
+
+  const pending = harness.hooks.ServerChanNotifier.sendTaskCompleted({}, '3016');
+  await flushPromises();
+  assert.equal(requestCount, 1);
+  for (let index = 0; index < 6 && requestCount < 2; index++) {
+    harness.advance(500);
+    await flushPromises();
+  }
+
+  assert.equal(await pending, true);
+  assert.equal(requestCount, 2);
+});
+
 test('Server酱³ 设置位于主操作区，清缓存重置位于调试区', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
   const serverChanButtonIndex = source.indexOf('id="bserverchan"');
@@ -485,6 +688,14 @@ test('Server酱³ 设置位于主操作区，清缓存重置位于调试区', ()
   assert.match(source, /^\/\/ @connect\s+push\.ft07\.com$/m);
 });
 
+test('已保存的 Server酱³ SendKey 不回填到页面 DOM，并提供显式清除操作', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.doesNotMatch(source, /sendKeyInput\.value\s*=\s*ServerChanNotifier\.getSendKey\(\)/);
+  assert.match(source, /id="serverchanclear"/);
+  assert.match(source, /已配置；输入新 SendKey 可替换/);
+});
+
 test('控制面板按钮增高并移除指定的 INFO 文案', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
 
@@ -492,6 +703,14 @@ test('控制面板按钮增高并移除指定的 INFO 文案', () => {
   assert.match(source, /\.dbg-row button\{flex:1;min-height:36px/);
   assert.doesNotMatch(source, /不使用刷新前的目录数据/);
   assert.doesNotMatch(source, /在课程总览页点击「开始学习」/);
+});
+
+test('折叠面板隐藏次要标题栏内容并保留展开按钮', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.match(source, /#ouchn-ap-v2\.mini \.aiask-button,#ouchn-ap-v2\.mini \.version\{display:none\}/);
+  assert.match(source, /#ouchn-ap-v2\.mini \.acts\{margin-left:auto;flex:none\}/);
+  assert.match(source, /toggle\.setAttribute\('aria-label', this\.expanded \? '折叠面板' : '展开面板'\)/);
 });
 
 test('控制面板提供前置工具、项目主页和作者入口', () => {
@@ -551,7 +770,7 @@ test('未配置或格式无效的 SendKey 时不发送 Server酱³ 请求', asyn
     gmStorage: new Map([['serverchan3_sendkey', 'sctp12345tabc']]),
     gmResponseStatus: 500,
   });
-  assert.equal(await failedHarness.hooks.ServerChanNotifier.sendTaskCompleted({}, '3016'), false);
+  assert.equal(await failedHarness.hooks.ServerChanNotifier.sendTaskCompleted({}, '3016', { maxAttempts: 1 }), false);
   assert.equal(failedHarness.requests.length, 1);
 });
 
@@ -585,6 +804,13 @@ test('DEBUG 日志默认关闭，用户可显式切换', () => {
   logger.setDebugEnabled(false);
   logger.debug('关闭后不应输出');
   assert.equal(logger.getRecent(300).at(-1).msg, '开启后应输出');
+});
+
+test('启动日志描述当前多重锚点导航架构', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.match(source, /自动刷课助手 v2（多重锚点定位）/);
+  assert.doesNotMatch(source, /自动刷课助手 v2（DOM 索引定位）/);
 });
 
 test('题干含 500 时仍等待题目状态，不按文本刷新', async () => {
@@ -687,6 +913,34 @@ test('答题完成数增加时重新计算空白题停滞时间', async () => {
   assert.equal(await pending, true);
 });
 
+test('未出现交卷成功结果页时不得推进考试断点', async () => {
+  const harness = createHarness();
+  let submitClicks = 0;
+  let confirmClicks = 0;
+  harness.selectors.set('.paperBtn', { click() { submitClicks += 1; } });
+  harness.selectors.set('.el-message-box__btns button, .el-dialog__footer button, .el-overlay button', [{
+    textContent: '确定提交',
+    click() { confirmClicks += 1; },
+  }]);
+
+  let settled = false;
+  let result = null;
+  harness.hooks.ExamHandler.submitExam(() => true).then(value => {
+    result = value;
+    settled = true;
+  });
+  await flushPromises();
+  for (let index = 0; index < 60 && !settled; index++) {
+    harness.advance(500);
+    await flushPromises();
+  }
+
+  assert.equal(submitClicks, 1);
+  assert.equal(confirmClicks, 1);
+  assert.equal(settled, true);
+  assert.equal(result, false);
+});
+
 test('opens collapsed task ancestors from outermost to innermost', async () => {
   const harness = createHarness();
   const clicks = [];
@@ -760,18 +1014,154 @@ test('索引漂移后按精确标题重新定位课程项', async () => {
   assert.deepEqual(clicks, ['正确课程']);
 });
 
+test('任务已取消时不会继续触发课程点击', async () => {
+  const harness = createHarness({ strictMouseEvent: true });
+  const clicks = [];
+  const header = {
+    getAttribute() { return 'true'; },
+    textContent: '待取消课程',
+    querySelector(selector) {
+      if (selector === '.title') return { textContent: '待取消课程' };
+      return null;
+    },
+  };
+  const item = {
+    parentElement: null,
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') return header;
+      if (selector === '.el-collapse-item__wrap') return { textContent: '（00:10:00） 0%' };
+      if (selector === '.section') return { dispatchEvent() { clicks.push('clicked'); } };
+      return null;
+    },
+    scrollIntoView() {},
+  };
+  harness.selectors.set('.el-collapse-item', [item]);
+
+  const pending = harness.hooks.CourseModel.navigateToDomIndex(
+    0,
+    '待取消课程',
+    'video',
+    '',
+    -1,
+    () => false,
+  );
+  await flushPromises();
+  harness.advance(400);
+
+  assert.equal(await pending, false);
+  assert.deepEqual(clicks, []);
+});
+
+test('加载层存在或没有可解析任务时目录不得判定就绪', () => {
+  const harness = createHarness();
+  const base = {
+    allItemCount: 2,
+    chapterCount: 1,
+    courseItemCount: 1,
+    parseableTaskCount: 1,
+    loadingCount: 0,
+  };
+
+  assert.equal(harness.hooks.CourseModel.isDirectorySnapshotReady(base, true), true);
+  assert.equal(harness.hooks.CourseModel.isDirectorySnapshotReady({ ...base, loadingCount: 1 }, true), false);
+  assert.equal(harness.hooks.CourseModel.isDirectorySnapshotReady({ ...base, parseableTaskCount: 0 }, true), false);
+});
+
+test('解析后没有任何视频或考试时拒绝生成课程模型', async () => {
+  const harness = createHarness();
+  const videoHeader = {
+    textContent: '孤立视频',
+    querySelector(selector) {
+      if (selector === '.title') return { textContent: '孤立视频' };
+      return null;
+    },
+  };
+  const videoItem = {
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') return videoHeader;
+      if (selector === '.el-collapse-item__wrap') return { textContent: '（00:10:00） 0%' };
+      return null;
+    },
+  };
+  const chapterName = { textContent: '第一章' };
+  const chapterHeader = {
+    querySelector(selector) {
+      if (selector === '.chapter_name span') return chapterName;
+      if (selector === '.chapter_name') return chapterName;
+      return null;
+    },
+  };
+  const chapterItem = {
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') return chapterHeader;
+      if (selector === '.el-collapse-item__wrap') return { textContent: '' };
+      return null;
+    },
+  };
+  harness.selectors.set('.el-collapse-item', [videoItem, chapterItem]);
+  harness.hooks.CourseModel.waitForStableDirectory = async () => ({});
+  harness.hooks.CourseModel.expandAllChapters = async () => {};
+
+  const model = await harness.hooks.CourseModel.buildModel();
+
+  assert.equal(model, null);
+});
+
+test('课程目录诊断包含当前恢复重试状态', () => {
+  const storage = new Map([['ouchn_autoplay_v2', JSON.stringify({
+    autoResume: true,
+    chapterIdx: 0,
+    pairIdx: 0,
+    itemType: 'video',
+    courseId: '3016',
+    retryCount: 7,
+    retryAt: 12345,
+    lastReloadReason: '播放器未加载',
+  })]]);
+  const harness = createHarness({ storage });
+
+  const snapshot = harness.hooks.CourseModel.getDirectorySnapshot();
+
+  assert.equal(snapshot.retryCount, 7);
+  assert.equal(snapshot.retryAt, 12345);
+  assert.equal(snapshot.lastReloadReason, '播放器未加载');
+});
+
 test('课程页含 500 时仍按稳定 DOM 扫描目录', async () => {
   const harness = createHarness();
   harness.context.document.body.innerText = '课程内容包含 500，但目录节点正常';
   harness.selectors.set('#app', { innerText: '课程内容包含 500，但目录节点正常' });
+  const chapterName = { textContent: '第一章' };
   const chapterHeader = {
     querySelector(selector) {
-      return selector === '.chapter_name' ? {} : null;
+      if (selector === '.chapter_name' || selector === '.chapter_name span') return chapterName;
+      return null;
     },
   };
-  harness.selectors.set('.el-collapse-item', [{}]);
-  harness.selectors.set('.el-collapse-item__header', [chapterHeader]);
-  harness.selectors.set('.hoverItem', [{}]);
+  const chapterItem = {
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') return chapterHeader;
+      if (selector === '.el-collapse-item__wrap') return { textContent: '' };
+      return null;
+    },
+  };
+  const courseHeader = {
+    textContent: '1.1 正常课程',
+    querySelector(selector) {
+      if (selector === '.title') return { textContent: '1.1 正常课程' };
+      return null;
+    },
+  };
+  const courseItem = {
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') return courseHeader;
+      if (selector === '.el-collapse-item__wrap') return { textContent: '（00:10:00） 0%' };
+      return null;
+    },
+  };
+  harness.selectors.set('.el-collapse-item', [chapterItem, courseItem]);
+  harness.selectors.set('.el-collapse-item__header', [chapterHeader, courseHeader]);
+  harness.selectors.set('.hoverItem', [courseItem]);
 
   const pending = harness.hooks.CourseModel.waitForStableDirectory({
     requireCourseItems: true,
@@ -790,6 +1180,7 @@ test('课程页含 500 时仍按稳定 DOM 扫描目录', async () => {
   const snapshot = await pending;
   assert.equal(snapshot.chapterCount, 1);
   assert.equal(snapshot.courseItemCount, 1);
+  assert.equal(snapshot.parseableTaskCount, 1);
 });
 
 test('creates a resumable bootstrap checkpoint before the course directory is parsed', () => {
@@ -828,6 +1219,29 @@ test('manual start clears a checkpoint that exhausted retries', async () => {
   assert.equal(restarted.autoResume, true);
 });
 
+test('没有可恢复断点的新运行会清零上一轮统计', async () => {
+  const harness = createHarness({ hash: '#/myCourse/study?id=3017' });
+  const task = {
+    chapterIdx: 0,
+    pairIdx: 0,
+    chapterItemIndex: 0,
+    itemType: 'video',
+    title: '新课程任务',
+  };
+  harness.hooks.CourseModel.buildModel = async () => ({ chapters: [] });
+  harness.hooks.CourseModel.getPendingTasks = () => [task];
+  harness.hooks.AutoPlayer.prototype._processLoop = async function noop() {};
+  const player = new harness.hooks.AutoPlayer();
+  player.stats = { videos: 9, exams: 8, errors: 7, skipped: 6 };
+
+  await player.start();
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(player.stats)),
+    { videos: 0, exams: 0, errors: 0, skipped: 0 },
+  );
+});
+
 test('stopping during a retry delay cancels the pending browser reload', () => {
   const harness = createHarness();
   const player = new harness.hooks.AutoPlayer();
@@ -841,6 +1255,51 @@ test('stopping during a retry delay cancels the pending browser reload', () => {
   harness.advance(30000);
   assert.equal(harness.reloads, 0);
   assert.equal(harness.hooks.StateManager.load(), null);
+});
+
+test('暂停、继续和停止会同步控制当前视频', async () => {
+  const harness = createHarness();
+  const video = createVideo();
+  harness.selectors.set('#xgPlayer video', video);
+  const player = new harness.hooks.AutoPlayer();
+  player.running = true;
+  player._loopRunning = true;
+  player._loopRunId = player._runId;
+
+  player.pause();
+  assert.equal(video.pauseCalls, 1);
+  assert.equal(video.paused, true);
+
+  player.resume();
+  await flushPromises();
+  assert.equal(video.playCalls, 1);
+  assert.equal(video.paused, false);
+
+  player.stop();
+  assert.equal(video.pauseCalls, 2);
+  assert.equal(video.paused, true);
+});
+
+test('视频在暂停期间才加载时，继续后会恢复播放', async () => {
+  const harness = createHarness();
+  const video = createVideo();
+  video.paused = true;
+  harness.selectors.set('#xgPlayer video', video);
+  let active = true;
+  let paused = true;
+
+  const pending = harness.hooks.VideoHandler.waitForCompletion(() => active, () => paused);
+  await flushPromises();
+  assert.equal(video.playCalls, 0);
+
+  paused = false;
+  harness.advance(3000);
+  await flushPromises();
+  assert.equal(video.playCalls, 1);
+
+  active = false;
+  harness.advance(3000);
+  assert.equal(await pending, false);
 });
 
 test('waits the full 10 seconds after ended before completing a video', async () => {
