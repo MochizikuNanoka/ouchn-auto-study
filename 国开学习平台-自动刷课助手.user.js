@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.1.0
+// @version      2.1.1
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -18,7 +18,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.1.0',
+    VERSION: '2.1.1',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -287,14 +287,24 @@
     return !!document.querySelector('.examQuestion') || window.location.hash.includes('examQuestion');
   }
 
-  function normalizeTaskTitle(value) {
+  function normalizeTaskIdentityTitle(value) {
     return String(value || '')
       .normalize('NFKC')
       .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
       .replace(/\s+/g, '')
-      .replace(/^["'“”‘’「」『』【】]+|["'“”‘’「」『』【】]+$/g, '')
-      .replace(/[，。!！]+$/g, '')
       .toLowerCase();
+  }
+
+  function normalizeTaskTitle(value) {
+    return normalizeTaskIdentityTitle(value)
+      .replace(/^["'“”‘’「」『』【】]+|["'“”‘’「」『』【】]+$/g, '')
+      .replace(/[，。!！]+$/g, '');
+  }
+
+  function isSameTaskTitle(left, right) {
+    const leftKey = normalizeTaskIdentityTitle(left);
+    const rightKey = normalizeTaskIdentityTitle(right);
+    return !!leftKey && leftKey === rightKey;
   }
 
   function cleanOrderHint(value) {
@@ -496,7 +506,7 @@
       if (!task?.title || !task?.itemType) return null;
       const candidates = CourseModel.getDirectoryTaskDescriptors(allItems).filter(descriptor =>
         descriptor.itemType === task.itemType &&
-        descriptor.title === task.title &&
+        isSameTaskTitle(descriptor.title, task.title) &&
         (!task.chapterName || descriptor.chapterName === task.chapterName)
       );
       let target = Number.isInteger(task.chapterItemIndex)
@@ -566,7 +576,7 @@
           var ve = { domIndex: i, chapterItemIndex: currentChapter.nextCourseItemIndex++, title: vtitle, duration: durMatch ? durMatch[1] : '', progress: progress, isComplete: progress >= 100 };
           var existPair = null;
           for (var pi = 0; pi < currentChapter.pairs.length; pi++) {
-            if (currentChapter.pairs[pi].video === null && currentChapter.pairs[pi].exam && currentChapter.pairs[pi].exam.title === vtitle) {
+            if (currentChapter.pairs[pi].video === null && currentChapter.pairs[pi].exam && isSameTaskTitle(currentChapter.pairs[pi].exam.title, vtitle)) {
               existPair = currentChapter.pairs[pi]; break;
             }
           }
@@ -579,7 +589,7 @@
           var ee = { domIndex: i, chapterItemIndex: currentChapter.nextCourseItemIndex++, title: etitle, status: status, isComplete: status === '合格' };
           var mpair = null;
           for (var mpi = 0; mpi < currentChapter.pairs.length; mpi++) {
-            if (!currentChapter.pairs[mpi].exam && currentChapter.pairs[mpi].video && currentChapter.pairs[mpi].video.title === etitle) {
+            if (!currentChapter.pairs[mpi].exam && currentChapter.pairs[mpi].video && isSameTaskTitle(currentChapter.pairs[mpi].video.title, etitle)) {
               mpair = currentChapter.pairs[mpi]; break;
             }
           }
@@ -587,7 +597,7 @@
           else {
             var hv = false;
             for (var cpi = 0; cpi < currentChapter.pairs.length; cpi++) {
-              if (currentChapter.pairs[cpi].video && currentChapter.pairs[cpi].video.title === etitle) { hv = true; break; }
+              if (currentChapter.pairs[cpi].video && isSameTaskTitle(currentChapter.pairs[cpi].video.title, etitle)) { hv = true; break; }
             }
             if (!hv) { currentChapter.pairs.push({ video: null, exam: ee }); }
           }
@@ -1038,7 +1048,7 @@
       if (!StateManager.hasTaskPointer(state) || !task) return false;
       if (!state.courseId || !courseId || String(state.courseId) !== String(courseId)) return false;
       if (state.chapterIdx !== task.chapterIdx || state.itemType !== task.itemType) return false;
-      if (state.title && task.title && state.title !== task.title) return false;
+      if (state.title && task.title && !isSameTaskTitle(state.title, task.title)) return false;
       if (Number.isInteger(state.chapterItemIndex) && Number.isInteger(task.chapterItemIndex)) {
         return state.chapterItemIndex === task.chapterItemIndex;
       }
@@ -1484,12 +1494,21 @@
       }
 
       const currentDomIndex = Number(currentTask?.domIndex);
+      const pairedVideos = currentTask?.itemType === 'exam'
+        ? matches.filter(task =>
+          task.itemType === 'video' &&
+          task.chapterIdx === currentTask.chapterIdx &&
+          task.pairIdx === currentTask.pairIdx
+        )
+        : [];
       const precedingMatches = Number.isInteger(currentDomIndex)
         ? matches.filter(task => Number(task.domIndex) < currentDomIndex)
         : [];
-      const requiredTask = precedingMatches.length > 0
-        ? precedingMatches[precedingMatches.length - 1]
-        : matches.length === 1 ? matches[0] : null;
+      const requiredTask = pairedVideos.length === 1
+        ? pairedVideos[0]
+        : precedingMatches.length > 0
+          ? precedingMatches[precedingMatches.length - 1]
+          : matches.length === 1 ? matches[0] : null;
       if (!requiredTask) {
         logger.warn(`提示节次“${hint}”在完整课程目录中匹配到 ${matches.length} 项，无法安全确定前置任务`);
         return false;

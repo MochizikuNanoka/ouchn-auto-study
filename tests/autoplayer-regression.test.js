@@ -285,6 +285,27 @@ test('断点标题不一致时不按旧节次序号误续跑', () => {
   assert.equal(StateManager.isSameTask(state, shiftedTask, '3016'), false);
 });
 
+test('断点标题只有空白差异时仍恢复同一任务', () => {
+  const harness = createHarness();
+  const { StateManager } = harness.hooks;
+  const state = {
+    chapterIdx: 1,
+    pairIdx: 2,
+    itemType: 'video',
+    title: '第2节汉朝大一统格局的巩固（2）',
+    courseId: '3016',
+  };
+  const task = {
+    chapterIdx: 1,
+    pairIdx: 2,
+    itemType: 'video',
+    title: '第2节\u3000汉朝大一统格局的巩固（2）',
+  };
+
+  assert.equal(StateManager.isSameTask(state, task, '3016'), true);
+  assert.equal(StateManager.isSameTask(state, { ...task, title: `${task.title}！` }, '3016'), false);
+});
+
 test('keeps retrying the same task beyond five refreshes', () => {
   const harness = createHarness();
   const makePlayer = () => {
@@ -446,14 +467,14 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('invalid', '2.0.3'), null);
 });
 
-test('v2.1.0 发布版本在元数据、运行时配置和 README 中保持一致', () => {
+test('v2.1.1 发布版本在元数据、运行时配置和 README 中保持一致', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 
-  assert.match(source, /^\/\/ @version\s+2\.1\.0$/m);
-  assert.match(source, /VERSION: '2\.1\.0'/);
-  assert.match(readme, /badge\/version-2\.1\.0-/);
-  assert.match(readme, /^\| 2\.1\.0 \| 2026-08-21 \|/m);
+  assert.match(source, /^\/\/ @version\s+2\.1\.1$/m);
+  assert.match(source, /VERSION: '2\.1\.1'/);
+  assert.match(readme, /badge\/version-2\.1\.1-/);
+  assert.match(readme, /^\| 2\.1\.1 \| 2026-08-22 \|/m);
 });
 
 test('平台顺序提示保留节次标题中的空白与完整正文', () => {
@@ -530,6 +551,40 @@ test('多个同名节次只选择当前任务之前距离最近的候选', () =>
   assert.equal(player.tasks[0].domIndex, 8);
   assert.equal(player.tasks[0].chapterName, '第二章');
   assert.equal(player.tasks[1].title, '下一节课程');
+});
+
+test('考试提示同名无空格标题时优先处理同一配对的视频', () => {
+  const harness = createHarness();
+  const chapters = [{
+    chapterIdx: 0,
+    name: '中国历史专题二',
+    pairs: [{
+      exam: {
+        domIndex: 25,
+        chapterItemIndex: 0,
+        title: '第2节 汉朝大一统格局的巩固（2）',
+        status: '未完成',
+        isComplete: false,
+      },
+      video: {
+        domIndex: 26,
+        chapterItemIndex: 1,
+        title: '第2节汉朝大一统格局的巩固（2）',
+        progress: 100,
+        isComplete: true,
+      },
+    }],
+  }];
+  const player = new harness.hooks.AutoPlayer();
+  player.courseId = '3016';
+  player.sections = chapters;
+  player.tasks = harness.hooks.CourseModel.getPendingTasks(chapters);
+
+  assert.equal(player.tasks[0].itemType, 'exam');
+  assert.equal(player._prioritizeOrderHint('第2节汉朝大一统格局的巩固（2）'), true);
+  assert.equal(player.tasks[0].itemType, 'video');
+  assert.equal(player.tasks[0].forceProcess, true);
+  assert.equal(player.tasks[1].itemType, 'exam');
 });
 
 test('平台要求重做的 100% 视频不会被二次确认再次跳过', async () => {
@@ -1014,6 +1069,43 @@ test('索引漂移后按精确标题重新定位课程项', async () => {
   assert.deepEqual(clicks, ['正确课程']);
 });
 
+test('索引漂移后允许标题中的空白形式变化', async () => {
+  const harness = createHarness({ strictMouseEvent: true });
+  const clicks = [];
+  const title = '第2节汉朝大一统格局的巩固（2）';
+  const header = {
+    getAttribute() { return 'true'; },
+    textContent: title,
+    querySelector(selector) {
+      if (selector === '.title') return { textContent: title };
+      return null;
+    },
+  };
+  const target = { dispatchEvent() { clicks.push(title); } };
+  const item = {
+    parentElement: null,
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') return header;
+      if (selector === '.el-collapse-item__wrap') return { textContent: '（00:10:00） 0%' };
+      if (selector === '.section') return target;
+      return null;
+    },
+    scrollIntoView() {},
+  };
+
+  harness.selectors.set('.el-collapse-item', [item]);
+  const pending = harness.hooks.CourseModel.navigateToDomIndex(
+    3,
+    '第2节\u3000汉朝大一统格局的巩固（2）',
+    'video',
+  );
+  await flushPromises();
+  harness.advance(400);
+
+  assert.equal(await pending, true);
+  assert.deepEqual(clicks, [title]);
+});
+
 test('任务已取消时不会继续触发课程点击', async () => {
   const harness = createHarness({ strictMouseEvent: true });
   const clicks = [];
@@ -1105,6 +1197,57 @@ test('解析后没有任何视频或考试时拒绝生成课程模型', async ()
   const model = await harness.hooks.CourseModel.buildModel();
 
   assert.equal(model, null);
+});
+
+test('课程模型把仅有空白差异的视频和考试配成同一学习单元', async () => {
+  const harness = createHarness();
+  const makeCourseItem = (title, bodyText) => ({
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') {
+        return {
+          textContent: title,
+          querySelector(headerSelector) {
+            if (headerSelector === '.title') return { textContent: title };
+            return null;
+          },
+        };
+      }
+      if (selector === '.el-collapse-item__wrap') return { textContent: bodyText };
+      return null;
+    },
+  });
+  const chapterName = { textContent: '中国历史专题二' };
+  const chapterItem = {
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') {
+        return {
+          querySelector(headerSelector) {
+            if (headerSelector === '.chapter_name span') return chapterName;
+            return null;
+          },
+        };
+      }
+      if (selector === '.el-collapse-item__wrap') return { textContent: '' };
+      return null;
+    },
+  };
+  const examItem = makeCourseItem(
+    '第2节 汉朝大一统格局的巩固（2）',
+    '测验 章节测试：未完成',
+  );
+  const videoItem = makeCourseItem(
+    '第2节汉朝大一统格局的巩固（2）',
+    '（00:10:00） 100%',
+  );
+  harness.selectors.set('.el-collapse-item', [chapterItem, examItem, videoItem]);
+  harness.hooks.CourseModel.waitForStableDirectory = async () => ({});
+  harness.hooks.CourseModel.expandAllChapters = async () => {};
+
+  const model = await harness.hooks.CourseModel.buildModel();
+
+  assert.equal(model.chapters[0].pairs.length, 1);
+  assert.equal(model.chapters[0].pairs[0].exam.title, '第2节 汉朝大一统格局的巩固（2）');
+  assert.equal(model.chapters[0].pairs[0].video.title, '第2节汉朝大一统格局的巩固（2）');
 });
 
 test('课程目录诊断包含当前恢复重试状态', () => {
