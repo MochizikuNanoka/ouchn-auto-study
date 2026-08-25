@@ -467,14 +467,14 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('invalid', '2.0.3'), null);
 });
 
-test('v2.1.1 发布版本在元数据、运行时配置和 README 中保持一致', () => {
+test('v2.1.2 发布版本在元数据、运行时配置和 README 中保持一致', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 
-  assert.match(source, /^\/\/ @version\s+2\.1\.1$/m);
-  assert.match(source, /VERSION: '2\.1\.1'/);
-  assert.match(readme, /badge\/version-2\.1\.1-/);
-  assert.match(readme, /^\| 2\.1\.1 \| 2026-08-22 \|/m);
+  assert.match(source, /^\/\/ @version\s+2\.1\.2$/m);
+  assert.match(source, /VERSION: '2\.1\.2'/);
+  assert.match(readme, /badge\/version-2\.1\.2-/);
+  assert.match(readme, /^\| 2\.1\.2 \| 2026-08-25 \|/m);
 });
 
 test('平台顺序提示保留节次标题中的空白与完整正文', () => {
@@ -1248,6 +1248,58 @@ test('课程模型把仅有空白差异的视频和考试配成同一学习单�
   assert.equal(model.chapters[0].pairs.length, 1);
   assert.equal(model.chapters[0].pairs[0].exam.title, '第2节 汉朝大一统格局的巩固（2）');
   assert.equal(model.chapters[0].pairs[0].video.title, '第2节汉朝大一统格局的巩固（2）');
+});
+
+test('三级节次的空格分隔半角时长可识别为视频并排在同名考试前', async () => {
+  const harness = createHarness();
+  const makeCourseItem = (title, bodyText) => ({
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') {
+        return {
+          textContent: title,
+          querySelector(headerSelector) {
+            if (headerSelector === '.title') return { textContent: title };
+            return null;
+          },
+        };
+      }
+      if (selector === '.el-collapse-item__wrap') return { textContent: bodyText };
+      return null;
+    },
+  });
+  const chapterName = { textContent: '第2章端正观念，树立求职目标' };
+  const chapterItem = {
+    querySelector(selector) {
+      if (selector === '.el-collapse-item__header') {
+        return {
+          querySelector(headerSelector) {
+            if (headerSelector === '.chapter_name span') return chapterName;
+            return null;
+          },
+        };
+      }
+      if (selector === '.el-collapse-item__wrap') return { textContent: '' };
+      return null;
+    },
+  };
+  const videoItem = makeCourseItem(
+    '2.1.2走出就业观念的误区',
+    '2.1.2走出就业观念的误区 (00: 12: 50) 0%',
+  );
+  const examItem = makeCourseItem(
+    '2.1.2走出就业观念的误区',
+    '测验2.1.2走出就业观念的误区 章节测试：未完成',
+  );
+  harness.selectors.set('.el-collapse-item', [chapterItem, videoItem, examItem]);
+  harness.hooks.CourseModel.waitForStableDirectory = async () => ({});
+  harness.hooks.CourseModel.expandAllChapters = async () => {};
+
+  const model = await harness.hooks.CourseModel.buildModel();
+  const tasks = harness.hooks.CourseModel.getPendingTasks(model.chapters);
+
+  assert.equal(model.chapters[0].pairs.length, 1);
+  assert.equal(model.chapters[0].pairs[0].video.duration, '00:12:50');
+  assert.deepEqual(Array.from(tasks, task => task.itemType), ['video', 'exam']);
 });
 
 test('课程目录诊断包含当前恢复重试状态', () => {

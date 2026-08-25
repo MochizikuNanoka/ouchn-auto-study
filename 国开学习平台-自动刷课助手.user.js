@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.1.1
+// @version      2.1.2
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -18,7 +18,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.1.1',
+    VERSION: '2.1.2',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -467,11 +467,12 @@
       const header = item?.querySelector('.el-collapse-item__header');
       const body = item?.querySelector('.el-collapse-item__wrap');
       const bodyText = String(body?.textContent || '').trim();
-      const durationMatch = bodyText.match(/（(\d{2}:\d{2}:\d{2})）/);
-      const itemType = durationMatch ? 'video' : /^测验/.test(bodyText) ? 'exam' : '';
+      const durationParts = bodyText.match(/[（(]\s*(\d{2})\s*[：:]\s*(\d{2})\s*[：:]\s*(\d{2})\s*[）)]/);
+      const duration = durationParts ? durationParts.slice(1).join(':') : '';
+      const itemType = duration ? 'video' : /^测验/.test(bodyText) ? 'exam' : '';
       const titleElement = header?.querySelector('.title');
       const title = String(titleElement?.textContent || header?.textContent || '').trim();
-      return { header, body, bodyText, durationMatch, itemType, title };
+      return { header, body, bodyText, duration, itemType, title };
     }
 
     static getDirectoryTaskDescriptors(allItems = document.querySelectorAll('.el-collapse-item')) {
@@ -566,14 +567,13 @@
           continue;
         }
         var btxt = itemInfo.bodyText;
-        var durMatch = itemInfo.durationMatch;
         var progMatch = btxt.match(/(\d{1,3})%/);
         var isVideo = itemInfo.itemType === 'video';
         var isExam = itemInfo.itemType === 'exam';
         if (isVideo && currentChapter) {
           var progress = progMatch ? parseInt(progMatch[1]) : 0;
           var vtitle = itemInfo.title;
-          var ve = { domIndex: i, chapterItemIndex: currentChapter.nextCourseItemIndex++, title: vtitle, duration: durMatch ? durMatch[1] : '', progress: progress, isComplete: progress >= 100 };
+          var ve = { domIndex: i, chapterItemIndex: currentChapter.nextCourseItemIndex++, title: vtitle, duration: itemInfo.duration, progress: progress, isComplete: progress >= 100 };
           var existPair = null;
           for (var pi = 0; pi < currentChapter.pairs.length; pi++) {
             if (currentChapter.pairs[pi].video === null && currentChapter.pairs[pi].exam && isSameTaskTitle(currentChapter.pairs[pi].exam.title, vtitle)) {
