@@ -709,18 +709,20 @@
       if (!isActive()) return false;
 
       // 播放（不改变倍速——平台会检测）
+      const canPlayVideo = () => isActive() && !isPaused() &&
+        video.isConnected !== false && document.querySelector('#xgPlayer video') === video && video.paused;
+      const retryPlay = () => {
+        if (!canPlayVideo()) return;
+        const btn = document.querySelector('.xgplayer-play, .xgplayer-start');
+        if (btn) btn.click();
+      };
       const playVideo = () => {
-        if (!video.paused) return;
+        if (!canPlayVideo()) return;
         try {
           const playResult = video.play();
-          if (!playResult?.catch) return;
-          playResult.catch(() => {
-            const btn = document.querySelector('.xgplayer-play, .xgplayer-start');
-            if (btn) btn.click();
-          });
+          playResult?.catch?.(retryPlay);
         } catch {
-          const btn = document.querySelector('.xgplayer-play, .xgplayer-start');
-          if (btn) btn.click();
+          retryPlay();
         }
       };
       let pausedByController = isPaused();
@@ -1240,10 +1242,15 @@
       this._lastProgressTime = Date.now();
       const video = this._pausedVideo;
       this._pausedVideo = null;
-      if (video && video.isConnected !== false && video.paused) {
+      const runId = this._runId;
+      if (video && this._isActiveRun(runId) && video.isConnected !== false &&
+          document.querySelector('#xgPlayer video') === video && video.paused) {
         try {
           const playResult = video.play();
           playResult?.catch?.(() => {
+            // A rejected play request may outlive a pause, stop, or route change.
+            if (!this._isActiveRun(runId) || this.paused || video.isConnected === false ||
+                document.querySelector('#xgPlayer video') !== video || !video.paused) return;
             const button = document.querySelector('.xgplayer-play, .xgplayer-start');
             if (button) button.click();
           });
