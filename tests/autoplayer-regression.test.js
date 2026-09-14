@@ -1579,3 +1579,46 @@ test('does not auto-resume a legacy checkpoint without a course ID', () => {
   const legacyCheckpoint = { chapterIdx: 0, pairIdx: 0, itemType: 'video' };
   assert.equal(harness.hooks.shouldAutoResume(legacyCheckpoint, '3016'), false);
 });
+
+for (const entry of ['resume', 'handler']) {
+  for (const scenario of ['active', 'paused', 'stopped', 'replaced', 'playing', 'restarted']) {
+    test(`${entry}: delayed play rejection respects ${scenario} state`, async () => {
+      const harness = createHarness();
+      const player = new harness.hooks.AutoPlayer();
+      player.running = true;
+      player._loopRunning = true;
+      player._loopRunId = player._runId;
+      const video = createVideo();
+      video.paused = true;
+      let rejectPlay;
+      video.play = () => new Promise((resolve, reject) => { rejectPlay = reject; });
+      harness.selectors.set('#xgPlayer video', video);
+      let clicks = 0;
+      harness.selectors.set('.xgplayer-play, .xgplayer-start', { click() { clicks += 1; } });
+      const runId = player._runId;
+      let pending;
+      if (entry === 'resume') {
+        player._pausedVideo = video;
+        player.resume();
+      } else {
+        pending = harness.hooks.VideoHandler.waitForCompletion(
+          () => player.running && player._runId === runId, () => player.paused,
+        );
+        await flushPromises();
+      }
+      if (scenario === 'paused') player.pause();
+      if (scenario === 'stopped') player.stop();
+      if (scenario === 'restarted') { player.stop(); player.running = true; }
+      if (scenario === 'replaced') harness.selectors.set('#xgPlayer video', createVideo());
+      if (scenario === 'playing') video.paused = false;
+      rejectPlay(new Error('Delayed playback rejection'));
+      await flushPromises();
+      assert.equal(clicks, scenario === 'active' ? 1 : 0);
+      player.stop();
+      if (pending) {
+        harness.advance(3000);
+        await pending;
+      }
+    });
+  }
+}
