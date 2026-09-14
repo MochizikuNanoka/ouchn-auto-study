@@ -465,16 +465,19 @@ test('compares GitHub Release versions numerically rather than by inequality', (
   assert.equal(compareVersions('v2.0.2', '2.0.2'), 0);
   assert.equal(compareVersions('v2.0.10', '2.0.3'), 1);
   assert.equal(compareVersions('invalid', '2.0.3'), null);
+  assert.equal(compareVersions('v2.1.3', '2.1.3-beta.1'), 1);
+  assert.equal(compareVersions('v2.1.3-beta.1', '2.1.3'), -1);
+  assert.equal(compareVersions('v2.1.2', '2.1.3-beta.1'), -1);
 });
 
-test('v2.1.2 发布版本在元数据、运行时配置和 README 中保持一致', () => {
+test('v2.1.3-beta.1 发布版本在元数据、运行时配置和 README 中保持一致', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 
-  assert.match(source, /^\/\/ @version\s+2\.1\.2$/m);
-  assert.match(source, /VERSION: '2\.1\.2'/);
-  assert.match(readme, /badge\/version-2\.1\.2-/);
-  assert.match(readme, /^\| 2\.1\.2 \| 2026-08-25 \|/m);
+  assert.match(source, /^\/\/ @version\s+2\.1\.3-beta\.1$/m);
+  assert.match(source, /VERSION: '2\.1\.3-beta\.1'/);
+  assert.match(readme, /badge\/version-2\.1\.3--beta\.1-/);
+  assert.match(readme, /^\| 2\.1\.3-beta\.1 \| 2026-09-14 \|/m);
 });
 
 test('平台顺序提示保留节次标题中的空白与完整正文', () => {
@@ -1581,7 +1584,7 @@ test('does not auto-resume a legacy checkpoint without a course ID', () => {
 });
 
 for (const entry of ['resume', 'handler']) {
-  for (const scenario of ['active', 'paused', 'stopped', 'replaced', 'playing', 'restarted']) {
+  for (const scenario of ['active', 'paused', 'stopped', 'replaced', 'playing', 'restarted', 'disconnected', 'missing-button']) {
     test(`${entry}: delayed play rejection respects ${scenario} state`, async () => {
       const harness = createHarness();
       const player = new harness.hooks.AutoPlayer();
@@ -1611,6 +1614,8 @@ for (const entry of ['resume', 'handler']) {
       if (scenario === 'restarted') { player.stop(); player.running = true; }
       if (scenario === 'replaced') harness.selectors.set('#xgPlayer video', createVideo());
       if (scenario === 'playing') video.paused = false;
+      if (scenario === 'disconnected') video.isConnected = false;
+      if (scenario === 'missing-button') harness.selectors.delete('.xgplayer-play, .xgplayer-start');
       rejectPlay(new Error('Delayed playback rejection'));
       await flushPromises();
       assert.equal(clicks, scenario === 'active' ? 1 : 0);

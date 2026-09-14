@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         国开学习平台 自动刷课助手
 // @namespace    https://zydz-menhu.ouchn.edu.cn/
-// @version      2.1.2
+// @version      2.1.3-beta.1
 // @description  国开学习平台（电大中专）自动刷课助手：自动播放视频、配合爱问答助手自动交卷，支持可靠断点续传与课程目录重新扫描
 // @author       Hermes
 // @match        https://zydz-menhu.ouchn.edu.cn/learningPlatform/*
@@ -18,7 +18,7 @@
 
   // ======================== 配置 ========================
   const CONFIG = {
-    VERSION: '2.1.2',
+    VERSION: '2.1.3-beta.1',
     VIDEO_CHECK_INTERVAL: 3000,
     EXAM_CHECK_INTERVAL: 2000,
     EXAM_STALLED_COMPLETE_RATIO: 0.8,
@@ -140,6 +140,9 @@
       if (leftParts[index] > rightParts[index]) return 1;
       if (leftParts[index] < rightParts[index]) return -1;
     }
+    // A stable release supersedes a prerelease with the same numeric version.
+    const isPrerelease = value => /^v?\d+(?:\.\d+){0,2}-/.test(String(value || '').trim());
+    if (isPrerelease(left) !== isPrerelease(right)) return isPrerelease(left) ? -1 : 1;
     return 0;
   }
 
